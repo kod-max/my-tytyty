@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import httpx
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -67,6 +68,25 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+
+# ======================== KEEP-ALIVE СЕРВЕР ========================
+async def handle_ping(request):
+    return web.Response(text="OK", status=200)
+
+async def start_keep_alive_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+    app.router.add_head("/", handle_ping)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Keep-Alive сервер запущен на порту {port}")
 
 
 # ======================== ПАРСЕР РАЗМЕТКИ ========================
@@ -610,11 +630,23 @@ async def check_channel_subscription(user_id: int, channel_username: str) -> boo
 
 
 async def check_all_sponsor_subscriptions(user_id: int) -> Tuple[bool, List[str]]:
+    sponsors = db.get_sponsors()
+    active_sponsors = [s for s in sponsors if s.get("channel_username")]
+
+    if not active_sponsors:
+        return True, []
+
+    tasks = [
+        check_channel_subscription(user_id, sponsor["channel_username"])
+        for sponsor in active_sponsors
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
     failed = []
-    for sponsor in db.get_sponsors():
-        channel = sponsor.get("channel_username")
-        if channel and not await check_channel_subscription(user_id, channel):
-            failed.append(sponsor.get("button_text", f"@{channel}"))
+    for sponsor, is_subbed in zip(active_sponsors, results):
+        if is_subbed is not True:
+            failed.append(sponsor.get("button_text", f"@{sponsor['channel_username']}"))
+
     return len(failed) == 0, failed
 
 
@@ -2437,6 +2469,7 @@ async def admin_tgras_debug(callback: CallbackQuery):
 # ======================== ЗАПУСК БОТА ========================
 async def main():
     logger.info("Запуск бота...")
+    await start_keep_alive_server()
     await dp.start_polling(bot)
 
 
