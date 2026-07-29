@@ -5,11 +5,13 @@ import re
 import random
 import string
 import os
+import csv
+from io import StringIO
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import httpx
-from aiohttp import web
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -21,15 +23,18 @@ from aiogram.types import (
     MessageEntity,
     CallbackQuery,
     Message,
-    FSInputFile
+    FSInputFile,
+    BufferedInputFile
 )
 
 # ======================== КОНФИГУРАЦИЯ ========================
 BOT_TOKEN = "8622998587:AAFglkCHi1lOcn9hjhH7ImSOWoTH74Ltyds"
 ADMIN_IDS = [8488094637]
 
-TGRAS_API_URL = "https://tgrass.space/offers"
-TGRAS_API_KEY = "07bfe44618674796ae8a2edc404a0cea"
+# ======================== PIARFLOW ========================
+PIARFLOW_API_KEY = "Jq1xivpQPHvRxKQE11EpbZaQ9t6BWIWE"
+PIARFLOW_API_URL = "https://piarflow.com/v1"
+PIARFLOW_MAX_SPONSORS = 10
 
 CURRENCY_RUB = "₽"
 CURRENCY_MANAT = "ТМТ"
@@ -47,7 +52,8 @@ MIN_WITHDRAW_MANAT = 37.5
 
 PAYMENTS_CHANNEL = "@RublTMT_Payments"
 
-DEFAULT_EMOJI_COINS = "5424818078833715060"
+# ПРЕМИУМ ЭМОДЗИ
+EMOJI_COINS = "5251435583443587818"  # Основной премиум эмодзи для спонсоров
 DEFAULT_EMOJI_CHECK = "5397916757333654639"
 DEFAULT_EMOJI_STAR = "5393512611968995988"
 DEFAULT_EMOJI_ROCKET = "5397916757333654638"
@@ -56,10 +62,12 @@ DEFAULT_EMOJI_FIRE = "5397916757333654637"
 EMOJI_TASK_HOURGLASS = DEFAULT_EMOJI_CHECK    
 EMOJI_TASK_DONE_ALL = DEFAULT_EMOJI_CHECK     
 EMOJI_TASK_LIST = DEFAULT_EMOJI_ROCKET        
-EMOJI_TASK_MONEY = DEFAULT_EMOJI_COINS        
+EMOJI_TASK_MONEY = EMOJI_COINS  # Используем основной эмодзи
 EMOJI_TASK_SUCCESS = DEFAULT_EMOJI_CHECK      
 EMOJI_LOCK = "5251408958941322169"            
 EMOJI_ANON = "6105006251295377689"            
+
+INACTIVE_DAYS = 7
 
 # ======================== ИНИЦИАЛИЗАЦИЯ ========================
 logging.basicConfig(level=logging.INFO)
@@ -69,105 +77,442 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-
-# ======================== KEEP-ALIVE СЕРВЕР ========================
-async def handle_ping(request):
-    return web.Response(text="OK", status=200)
-
-async def start_keep_alive_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    app.router.add_get("/ping", handle_ping)
-    app.router.add_head("/", handle_ping)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Keep-Alive сервер запущен на порту {port}")
-
-
 # ======================== ПАРСЕР РАЗМЕТКИ ========================
-TAG_RE = re.compile(
-    r'<emoji\s+id=["\'](\d+)["\']>(.*?)</emoji>'
-    r'|<b>(.*?)</b>'
-    r'|\*\*(.*?)\*\*'
-    r'|<i>(.*?)</i>'
-    r'|<code>(.*?)</code>'
-    r'|<quote>(.*?)</quote>'
-    r'|##(.*?)##',
-    re.DOTALL
-)
-
-
 def parse_premium_emoji(text: str) -> Tuple[str, List[MessageEntity]]:
+    """
+    Парсер разметки с поддержкой:
+    - <emoji id="123">текст</emoji> - премиум эмодзи
+    - <b>текст</b> или **текст** - жирный
+    - <i>текст</i> - курсив
+    - <code>текст</code> - код
+    - <pole>текст</pole> - цитата (вместо ##текст##)
+    - <zhirnyy>текст</zhirnyy> - жирный в цитате
+    """
     if not text:
         return text, []
 
     entities = []
     clean_text = ""
-    last_end = 0
-
-    def utf16_len(s: str) -> int:
-        return len(s.encode('utf-16-le')) // 2
-
-    utf16_offset = 0
-
-    for match in TAG_RE.finditer(text):
-        start, end = match.span()
-        (emoji_id, emoji_visible, bold_text, bold_text2,
-         italic_text, code_text, quote_text, quote_text2) = match.groups()
-
-        before = text[last_end:start]
-        clean_text += before
-        utf16_offset += utf16_len(before)
-
-        if emoji_id is not None:
-            visible = emoji_visible or "🙂"
-            entity_length = utf16_len(visible)
+    current_pos = 0
+    
+    def add_text_with_entities(content: str, entity_type: str = None, custom_emoji_id: str = None):
+        nonlocal clean_text, current_pos
+        
+        if entity_type == "custom_emoji":
+            visible = content or "🙂"
+            entity_length = len(visible.encode('utf-16-le')) // 2
             entities.append(
                 MessageEntity(
                     type="custom_emoji",
-                    offset=utf16_offset,
+                    offset=current_pos,
                     length=entity_length,
-                    custom_emoji_id=emoji_id
+                    custom_emoji_id=custom_emoji_id
                 )
             )
             clean_text += visible
-            utf16_offset += entity_length
-        elif bold_text is not None or bold_text2 is not None:
-            content = bold_text if bold_text is not None else bold_text2
-            entity_length = utf16_len(content)
-            entities.append(MessageEntity(type="bold", offset=utf16_offset, length=entity_length))
+            current_pos += entity_length
+        elif entity_type == "bold":
+            entity_length = len(content.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="bold", offset=current_pos, length=entity_length)
+            )
             clean_text += content
-            utf16_offset += entity_length
-        elif italic_text is not None:
-            entity_length = utf16_len(italic_text)
-            entities.append(MessageEntity(type="italic", offset=utf16_offset, length=entity_length))
-            clean_text += italic_text
-            utf16_offset += entity_length
-        elif code_text is not None:
-            entity_length = utf16_len(code_text)
-            entities.append(MessageEntity(type="code", offset=utf16_offset, length=entity_length))
-            clean_text += code_text
-            utf16_offset += entity_length
-        elif quote_text is not None or quote_text2 is not None:
-            content = quote_text if quote_text is not None else quote_text2
-            entity_length = utf16_len(content)
-            entities.append(MessageEntity(type="blockquote", offset=utf16_offset, length=entity_length))
+            current_pos += entity_length
+        elif entity_type == "italic":
+            entity_length = len(content.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="italic", offset=current_pos, length=entity_length)
+            )
             clean_text += content
-            utf16_offset += entity_length
-
+            current_pos += entity_length
+        elif entity_type == "code":
+            entity_length = len(content.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="code", offset=current_pos, length=entity_length)
+            )
+            clean_text += content
+            current_pos += entity_length
+        elif entity_type == "blockquote":
+            entity_length = len(content.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="blockquote", offset=current_pos, length=entity_length)
+            )
+            clean_text += content
+            current_pos += entity_length
+        else:
+            clean_text += content
+            current_pos += len(content.encode('utf-16-le')) // 2
+    
+    # Сначала обрабатываем <pole>...</pole>
+    pole_pattern = re.compile(r'<pole>(.*?)</pole>', re.DOTALL)
+    
+    # Разбиваем текст на части
+    parts = []
+    last_end = 0
+    
+    for match in pole_pattern.finditer(text):
+        start, end = match.span()
+        if start > last_end:
+            parts.append(('text', text[last_end:start]))
+        parts.append(('pole', match.group(1)))
         last_end = end
+    
+    if last_end < len(text):
+        parts.append(('text', text[last_end:]))
+    
+    # Обрабатываем каждую часть
+    for part_type, part_content in parts:
+        if part_type == 'pole':
+            pole_text, pole_entities = process_pole_content(part_content)
+            add_text_with_entities(pole_text, 'blockquote')
+            for e in pole_entities:
+                e.offset += current_pos - len(pole_text.encode('utf-16-le')) // 2
+                entities.append(e)
+        else:
+            regular_text, regular_entities = process_regular_text(part_content)
+            clean_text += regular_text
+            for e in regular_entities:
+                e.offset += current_pos
+                entities.append(e)
+            current_pos += len(regular_text.encode('utf-16-le')) // 2
+    
+    return clean_text, entities
 
-    clean_text += text[last_end:]
+
+def process_pole_content(content: str) -> Tuple[str, List[MessageEntity]]:
+    """Обрабатывает содержимое pole с поддержкой вложенных тегов"""
+    inner_entities = []
+    inner_text = ""
+    pos = 0
+    
+    def add_inner_entity(text_part: str, entity_type: str = None, custom_emoji_id: str = None):
+        nonlocal inner_text, pos
+        if entity_type == "custom_emoji":
+            visible = text_part or "🙂"
+            entity_length = len(visible.encode('utf-16-le')) // 2
+            inner_entities.append(
+                MessageEntity(
+                    type="custom_emoji",
+                    offset=pos,
+                    length=entity_length,
+                    custom_emoji_id=custom_emoji_id
+                )
+            )
+            inner_text += visible
+            pos += entity_length
+        elif entity_type == "bold":
+            entity_length = len(text_part.encode('utf-16-le')) // 2
+            inner_entities.append(
+                MessageEntity(type="bold", offset=pos, length=entity_length)
+            )
+            inner_text += text_part
+            pos += entity_length
+        else:
+            inner_text += text_part
+            pos += len(text_part.encode('utf-16-le')) // 2
+    
+    # Обрабатываем содержимое pole
+    temp = content
+    
+    # 1. <zhirnyy>текст</zhirnyy>
+    zhirnyy_markers = []
+    
+    def replace_zhirnyy(match):
+        zhirnyy_markers.append(match.group(1))
+        return f"__Z_{len(zhirnyy_markers)-1}__"
+    
+    temp = re.sub(r'<zhirnyy>(.*?)</zhirnyy>', replace_zhirnyy, temp, flags=re.DOTALL)
+    
+    # 2. **текст**
+    bold_markers = []
+    
+    def replace_bold(match):
+        bold_markers.append(match.group(1))
+        return f"__B_{len(bold_markers)-1}__"
+    
+    temp = re.sub(r'\*\*(.*?)\*\*', replace_bold, temp)
+    
+    # 3. <b>текст</b>
+    b_markers = []
+    
+    def replace_b(match):
+        b_markers.append(match.group(1))
+        return f"__BB_{len(b_markers)-1}__"
+    
+    temp = re.sub(r'<b>(.*?)</b>', replace_b, temp, flags=re.DOTALL)
+    
+    # 4. <emoji id="...">текст</emoji>
+    emoji_markers = []
+    
+    def replace_emoji(match):
+        emoji_markers.append((match.group(1), match.group(2)))
+        return f"__E_{len(emoji_markers)-1}__"
+    
+    temp = re.sub(r'<emoji\s+id=["\'](\d+)["\']>(.*?)</emoji>', replace_emoji, temp, flags=re.DOTALL)
+    
+    # Разбираем temp
+    i = 0
+    while i < len(temp):
+        marker_found = False
+        
+        if temp[i:].startswith("__Z_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(zhirnyy_markers):
+                        add_inner_entity(zhirnyy_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__B_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(bold_markers):
+                        add_inner_entity(bold_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__BB_"):
+            end_idx = temp.find("__", i + 5)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+5:end_idx])
+                    if idx < len(b_markers):
+                        add_inner_entity(b_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__E_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(emoji_markers):
+                        emoji_id, visible = emoji_markers[idx]
+                        add_inner_entity(visible, 'custom_emoji', emoji_id)
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if not marker_found:
+            next_marker = len(temp)
+            for marker in ["__Z_", "__B_", "__BB_", "__E_"]:
+                pos_marker = temp.find(marker, i)
+                if pos_marker != -1 and pos_marker < next_marker:
+                    next_marker = pos_marker
+            
+            if next_marker > i:
+                text_part = temp[i:next_marker]
+                add_inner_entity(text_part)
+                i = next_marker
+            else:
+                i += 1
+    
+    return inner_text, inner_entities
+
+
+def process_regular_text(text: str) -> Tuple[str, List[MessageEntity]]:
+    """Обрабатывает обычный текст с тегами (вне pole)"""
+    entities = []
+    clean_text = ""
+    pos = 0
+    
+    def add_entity(text_part: str, entity_type: str = None, custom_emoji_id: str = None):
+        nonlocal clean_text, pos
+        if entity_type == "custom_emoji":
+            visible = text_part or "🙂"
+            entity_length = len(visible.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(
+                    type="custom_emoji",
+                    offset=pos,
+                    length=entity_length,
+                    custom_emoji_id=custom_emoji_id
+                )
+            )
+            clean_text += visible
+            pos += entity_length
+        elif entity_type == "bold":
+            entity_length = len(text_part.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="bold", offset=pos, length=entity_length)
+            )
+            clean_text += text_part
+            pos += entity_length
+        elif entity_type == "italic":
+            entity_length = len(text_part.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="italic", offset=pos, length=entity_length)
+            )
+            clean_text += text_part
+            pos += entity_length
+        elif entity_type == "code":
+            entity_length = len(text_part.encode('utf-16-le')) // 2
+            entities.append(
+                MessageEntity(type="code", offset=pos, length=entity_length)
+            )
+            clean_text += text_part
+            pos += entity_length
+        else:
+            clean_text += text_part
+            pos += len(text_part.encode('utf-16-le')) // 2
+    
+    temp = text
+    
+    # 1. <emoji id="...">текст</emoji>
+    emoji_markers = []
+    
+    def replace_emoji(match):
+        emoji_markers.append((match.group(1), match.group(2)))
+        return f"__E_{len(emoji_markers)-1}__"
+    
+    temp = re.sub(r'<emoji\s+id=["\'](\d+)["\']>(.*?)</emoji>', replace_emoji, temp, flags=re.DOTALL)
+    
+    # 2. **текст**
+    bold_markers = []
+    
+    def replace_bold(match):
+        bold_markers.append(match.group(1))
+        return f"__B_{len(bold_markers)-1}__"
+    
+    temp = re.sub(r'\*\*(.*?)\*\*', replace_bold, temp)
+    
+    # 3. <b>текст</b>
+    b_markers = []
+    
+    def replace_b(match):
+        b_markers.append(match.group(1))
+        return f"__BB_{len(b_markers)-1}__"
+    
+    temp = re.sub(r'<b>(.*?)</b>', replace_b, temp, flags=re.DOTALL)
+    
+    # 4. <i>текст</i>
+    i_markers = []
+    
+    def replace_i(match):
+        i_markers.append(match.group(1))
+        return f"__I_{len(i_markers)-1}__"
+    
+    temp = re.sub(r'<i>(.*?)</i>', replace_i, temp, flags=re.DOTALL)
+    
+    # 5. <code>текст</code>
+    code_markers = []
+    
+    def replace_code(match):
+        code_markers.append(match.group(1))
+        return f"__C_{len(code_markers)-1}__"
+    
+    temp = re.sub(r'<code>(.*?)</code>', replace_code, temp, flags=re.DOTALL)
+    
+    # Разбираем temp
+    i = 0
+    while i < len(temp):
+        marker_found = False
+        
+        if temp[i:].startswith("__E_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(emoji_markers):
+                        emoji_id, visible = emoji_markers[idx]
+                        add_entity(visible, 'custom_emoji', emoji_id)
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__B_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(bold_markers):
+                        add_entity(bold_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__BB_"):
+            end_idx = temp.find("__", i + 5)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+5:end_idx])
+                    if idx < len(b_markers):
+                        add_entity(b_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__I_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(i_markers):
+                        add_entity(i_markers[idx], 'italic')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if temp[i:].startswith("__C_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(code_markers):
+                        add_entity(code_markers[idx], 'code')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
+        
+        if not marker_found:
+            next_marker = len(temp)
+            for marker in ["__E_", "__B_", "__BB_", "__I_", "__C_"]:
+                pos_marker = temp.find(marker, i)
+                if pos_marker != -1 and pos_marker < next_marker:
+                    next_marker = pos_marker
+            
+            if next_marker > i:
+                text_part = temp[i:next_marker]
+                add_entity(text_part)
+                i = next_marker
+            else:
+                i += 1
+    
     return clean_text, entities
 
 
 def format_with_emoji(text: str, **kwargs) -> Tuple[str, List[MessageEntity]]:
-    formatted = text.format(**kwargs)
+    """Применяет форматирование с подстановкой переменных и парсит разметку"""
+    try:
+        formatted = text.format(**kwargs)
+    except (KeyError, IndexError, ValueError) as e:
+        logger.error(f"Ошибка форматирования: {e}")
+        return text, []
     return parse_premium_emoji(formatted)
 
 
@@ -176,7 +521,6 @@ def strip_custom_emoji_entities(entities: Optional[List[MessageEntity]]) -> Opti
         return None
     filtered = [e for e in entities if e.type != "custom_emoji"]
     return filtered if filtered else None
-
 
 # ======================== БАЗА ДАННЫХ ========================
 class Database:
@@ -204,7 +548,6 @@ class Database:
                     self.remove_banner()
                     logger.warning("Баннер удалён: слишком маленький файл")
                     return
-                
                 with open(banner_path, 'rb') as f:
                     header = f.read(10)
                     if header[:2] != b'\xff\xd8':
@@ -231,10 +574,14 @@ class Database:
             "sponsors": [],
             "admins": ADMIN_IDS,
             "start_text": (
-                "👋 Добро пожаловать в бот заработка!\n\n"
-                "<emoji id=\"{EMOJI_STAR}\">⭐</emoji> Приглашайте друзей и зарабатывайте!\n"
-                "<emoji id=\"{EMOJI_COINS}\">💰</emoji> За каждого реферала вы получаете "
-                "{REFERRAL_REWARD_RUB}₽ / {REFERRAL_REWARD_MANAT}ТМТ"
+                '<emoji id="5224607267797606837">👋</emoji> Добро пожаловать в бот заработка!\n\n'
+                'Здесь всё просто: выполняй задания от спонсоров, приглашай друзей и выводи заработанное на свой счёт.\n\n'
+                '<pole>\n'
+                '<emoji id="5251435583443587818">💰</emoji> <zhirnyy>За каждого приглашённого друга вы получаете {REFERRAL_REWARD_RUB}₽ / {REFERRAL_REWARD_MANAT}ТМТ</zhirnyy>\n'
+                '<emoji id="5413879192267805083">🎯</emoji> До 5 заданий в день — 0.50₽ за каждое\n'
+                '<emoji id="5456140674028019486">⚡️</emoji> Выплаты обрабатываются в течение 1-12 часов\n'
+                '</pole>\n\n'
+                'Жми «Заработок», чтобы начать зарабатывать прямо сейчас!<emoji id="5440660757194744323">⭐</emoji>'
             ),
             "button_texts": {
                 "earn": "Заработок",
@@ -244,7 +591,7 @@ class Database:
                 "withdraw": "Вывод",
             },
             "button_emojis": {
-                "earn": DEFAULT_EMOJI_COINS,
+                "earn": EMOJI_COINS,
                 "referrals": DEFAULT_EMOJI_FIRE,
                 "top": DEFAULT_EMOJI_ROCKET,
                 "profile": DEFAULT_EMOJI_STAR,
@@ -257,9 +604,15 @@ class Database:
             "statistics": {
                 "total_users": 0,
                 "total_referrals": 0,
-                "total_withdrawn": 0
+                "total_withdrawn": 0,
+                "total_earned": 0.0,
+                "total_spent": 0.0,
+                "active_users": 0
             },
-            "bot_stopped": False
+            "bot_stopped": False,
+            "promocodes": {},
+            "transactions": {},
+            "user_activity": {}
         }
 
     def _ensure_defaults(self):
@@ -291,10 +644,16 @@ class Database:
                 "referred_by": None,
                 "created_at": datetime.now().isoformat(),
                 "is_banned": False,
-                "verified_sponsors": False
+                "verified_sponsors": False,
+                "last_activity": datetime.now().isoformat()
             }
             self.save()
         return self.data["users"][uid]
+
+    def update_activity(self, user_id: int):
+        user = self.get_user(user_id)
+        user["last_activity"] = datetime.now().isoformat()
+        self.save()
 
     def _generate_code(self, user_id: int) -> str:
         chars = string.ascii_uppercase + string.digits
@@ -306,41 +665,33 @@ class Database:
 
     def link_referral(self, referrer_id: int, new_user_id: int) -> bool:
         new_user = self.get_user(new_user_id)
-
         if new_user.get("referred_by") is not None:
             return False
-
         new_user["referred_by"] = referrer_id
         new_user["referral_reward_paid"] = False
-
         uid = str(referrer_id)
         if uid not in self.data["referrals"]:
             self.data["referrals"][uid] = []
         self.data["referrals"][uid].append(new_user_id)
-
         self.save()
         return True
 
     def confirm_referral_reward(self, new_user_id: int) -> Optional[int]:
         new_user = self.get_user(new_user_id)
         referrer_id = new_user.get("referred_by")
-
         if referrer_id is None:
             return None
         if new_user.get("referral_reward_paid"):
             return None
-
         referrer = self.get_user(referrer_id)
         reward_rub = self.get_referral_reward_rub()
         reward_manat = self.get_referral_reward_manat()
-
         referrer["balance_rub"] += reward_rub
         referrer["balance_manat"] += reward_manat
         referrer["referral_count"] += 1
-
         new_user["referral_reward_paid"] = True
         self.data["statistics"]["total_referrals"] += 1
-
+        self.add_transaction(referrer_id, "earn", reward_rub, f"Реферал {new_user_id}")
         self.save()
         return referrer_id
 
@@ -352,6 +703,7 @@ class Database:
         user = self.get_user(user_id)
         user["balance_rub"] += amount_rub
         user["balance_manat"] += amount_manat
+        self.data["statistics"]["total_earned"] += amount_rub
         self.save()
 
     def deduct_balance(self, user_id: int, amount_rub: float) -> bool:
@@ -360,10 +712,11 @@ class Database:
             return False
         user["balance_rub"] -= amount_rub
         user["balance_manat"] -= amount_rub * RATE_MANAT
+        self.data["statistics"]["total_spent"] += amount_rub
         self.save()
         return True
 
-    def create_withdrawal(self, user_id: int, amount_display: float, currency: str, amount_rub_deducted: float) -> int:
+    def create_withdrawal(self, user_id: int, amount_display: float, currency: str, amount_rub_deducted: float, details: str) -> int:
         withdrawal_id = len(self.data["withdrawals"]) + 1
         self.data["withdrawals"].append({
             "id": withdrawal_id,
@@ -371,6 +724,7 @@ class Database:
             "amount_display": amount_display,
             "currency": currency,
             "amount_rub_deducted": amount_rub_deducted,
+            "details": details,
             "status": "pending",
             "created_at": datetime.now().isoformat(),
             "channel_message_id": None
@@ -419,14 +773,13 @@ class Database:
     def register_task_completed(self, user_id: int) -> bool:
         user = self.get_user(user_id)
         self._reset_daily_tasks_if_needed(user)
-
         if user.get("tasks_today", 0) >= MAX_TASKS_PER_DAY:
             return False
-
         user["tasks_today"] += 1
         user["tasks_completed"] += 1
         user["balance_rub"] += TASK_REWARD_RUB
         user["balance_manat"] += TASK_REWARD_MANAT
+        self.add_transaction(user_id, "earn", TASK_REWARD_RUB, "Выполнение задания")
         self.save()
         return True
 
@@ -456,13 +809,18 @@ class Database:
         user = self.get_user(user_id)
         return user.get("is_banned", False)
 
-    def add_sponsor(self, button_text: str, link: str, channel_username: str = None, order: int = 0):
-        self.data["sponsors"].append({
+    def add_sponsor(self, button_text: str, link: str, channel_id: str = None, order: int = 0, sponsor_type: str = "channel", channel_ids: List[str] = None):
+        entry = {
             "button_text": button_text,
             "link": link,
-            "channel_username": channel_username,
-            "order": order
-        })
+            "order": order,
+            "type": sponsor_type
+        }
+        if sponsor_type == "addlist" and channel_ids:
+            entry["channel_ids"] = channel_ids
+        else:
+            entry["channel_id"] = channel_id
+        self.data["sponsors"].append(entry)
         self.save()
 
     def remove_sponsor(self, index: int):
@@ -504,7 +862,7 @@ class Database:
         self.save()
 
     def get_button_emoji(self, key: str) -> str:
-        return self.data.get("button_emojis", {}).get(key, DEFAULT_EMOJI_STAR)
+        return self.data.get("button_emojis", {}).get(key, EMOJI_COINS)
 
     def set_button_emoji(self, key: str, emoji_id: str):
         self.data["button_emojis"][key] = emoji_id
@@ -544,111 +902,206 @@ class Database:
         self.data["referral_reward_rub"] = manat / RATE_MANAT
         self.save()
 
+    # ===== НОВЫЕ МЕТОДЫ =====
+    
+    def create_promocode(self, code: str, reward: float, uses: int):
+        self.data["promocodes"][code] = {
+            "reward": reward,
+            "uses": uses,
+            "used_by": []
+        }
+        self.save()
+
+    def use_promocode(self, user_id: int, code: str) -> Optional[float]:
+        promo = self.data["promocodes"].get(code)
+        if not promo:
+            return None
+        if len(promo["used_by"]) >= promo["uses"]:
+            return None
+        if user_id in promo["used_by"]:
+            return None
+        
+        promo["used_by"].append(user_id)
+        reward = promo["reward"]
+        self.add_balance(user_id, reward, reward * RATE_MANAT)
+        self.add_transaction(user_id, "promo", reward, f"Промокод: {code}")
+        self.save()
+        return reward
+
+    def add_transaction(self, user_id: int, trans_type: str, amount: float, description: str = ""):
+        uid = str(user_id)
+        if uid not in self.data["transactions"]:
+            self.data["transactions"][uid] = []
+        self.data["transactions"][uid].append({
+            "type": trans_type,
+            "amount": amount,
+            "date": datetime.now().isoformat(),
+            "description": description
+        })
+        self.save()
+
+    def get_transactions(self, user_id: int, limit: int = 20) -> List[Dict]:
+        uid = str(user_id)
+        return self.data["transactions"].get(uid, [])[-limit:]
+
+    def get_referral_stats(self, user_id: int) -> Dict:
+        referrals = self.get_referrals(user_id)
+        active_count = 0
+        for ref_id in referrals:
+            user = self.get_user(ref_id)
+            if user.get("tasks_completed", 0) > 0:
+                active_count += 1
+        return {
+            "total": len(referrals),
+            "active": active_count,
+            "inactive": len(referrals) - active_count
+        }
+
+    def export_stats_csv(self) -> str:
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["User ID", "Balance RUB", "Balance TMT", "Referrals", "Tasks Done", "Banned", "Joined At"])
+        for uid, user in self.data["users"].items():
+            writer.writerow([
+                uid,
+                user.get("balance_rub", 0),
+                user.get("balance_manat", 0),
+                user.get("referral_count", 0),
+                user.get("tasks_completed", 0),
+                user.get("is_banned", False),
+                user.get("created_at", "")
+            ])
+        return output.getvalue()
+
+    def get_inactive_users(self, days: int = INACTIVE_DAYS) -> List[int]:
+        threshold = datetime.now() - timedelta(days=days)
+        inactive = []
+        for uid, user in self.data["users"].items():
+            if user.get("is_banned", False):
+                continue
+            last_activity = user.get("last_activity")
+            if last_activity:
+                last_date = datetime.fromisoformat(last_activity)
+                if last_date < threshold:
+                    inactive.append(int(uid))
+        return inactive
 
 db = Database()
 
+# ======================== PIARFLOW API ========================
+_piar_cache = {}
+PIAR_CACHE_TTL = 60
 
-# ======================== TGRAS ========================
-async def fetch_tgrass_offers(user_id: int) -> Tuple[int, Dict]:
-    payload = {
-        "tg_user_id": user_id,
-        "tg_login": None,
-        "lang": "ru",
-        "is_premium": False
-    }
+_shown_piar_links: Dict[int, List[str]] = {}
 
-    try:
-        async with httpx.AsyncClient(verify=False, timeout=8) as client:
-            response = await client.post(
-                TGRAS_API_URL,
-                json=payload,
-                headers={
-                    "accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Auth": TGRAS_API_KEY
-                }
-            )
-        status_code = response.status_code
-        data = response.json()
-        return status_code, data
-    except Exception as e:
-        logger.error(f"TGRAS error: {e}")
-        return 500, {"status": "error", "message": str(e)}
-
-
-TGRAS_CACHE_TTL = 60
-_tgrass_cache: Dict[int, Tuple[float, int, Dict]] = {}
-
-
-async def fetch_tgrass_offers_cached(user_id: int) -> Tuple[int, Dict]:
+async def fetch_piar_sponsors(user_id: int, chat_id: int) -> List[Dict]:
+    if not PIARFLOW_API_KEY or PIARFLOW_API_KEY == "BURAYA_API_KEY_YAZ":
+        return []
+    
+    cache_key = f"{user_id}_{chat_id}"
     now = asyncio.get_event_loop().time()
-    cached = _tgrass_cache.get(user_id)
-    if cached is not None:
-        cached_time, cached_status, cached_data = cached
-        if now - cached_time < TGRAS_CACHE_TTL:
-            return cached_status, cached_data
-
-    status_code, data = await fetch_tgrass_offers(user_id)
-    _tgrass_cache[user_id] = (now, status_code, data)
-    return status_code, data
-
-
-async def check_tgrass_subscriptions(user_id: int) -> bool:
-    status_code, response = await fetch_tgrass_offers_cached(user_id)
-    if status_code == 200 and response.get("status") == "ok":
-        return True
-    return False
-
-
-def invalidate_tgrass_cache(user_id: int):
-    _tgrass_cache.pop(user_id, None)
-
-
-async def get_tgrass_sponsors(user_id: int) -> List[Dict]:
-    status_code, response = await fetch_tgrass_offers_cached(user_id)
-    if status_code == 200:
-        offers = response.get("offers", [])
-        return offers
-    return []
-
-
-# ======================== ПРОВЕРКА ПОДПИСОК ========================
-async def check_channel_subscription(user_id: int, channel_username: str) -> bool:
-    if not channel_username:
-        return True
-
+    if cache_key in _piar_cache:
+        cached_time, data = _piar_cache[cache_key]
+        if now - cached_time < PIAR_CACHE_TTL:
+            return data
+    
+    url = f"{PIARFLOW_API_URL}/sponsors"
+    payload = {"user_id": user_id, "chat_id": chat_id, "max_sponsors": PIARFLOW_MAX_SPONSORS}
+    headers = {"Authorization": f"Bearer {PIARFLOW_API_KEY}", "Content-Type": "application/json"}
+    
     try:
-        if channel_username.startswith("@"):
-            channel_username = channel_username[1:]
-
-        chat = await bot.get_chat(f"@{channel_username}")
-        member = await bot.get_chat_member(chat.id, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    sponsors = data.get("sponsors", [])
+                    _piar_cache[cache_key] = (now, sponsors)
+                    logger.info(f"PiarFlow: получено {len(sponsors)} спонсоров для user_id={user_id}")
+                    return sponsors
+                elif resp.status == 404:
+                    _piar_cache[cache_key] = (now, [])
+                    logger.info(f"PiarFlow: заданий нет (404) для user_id={user_id}")
+                    return []
+                else:
+                    logger.error(f"PiarFlow ошибка: HTTP {resp.status}")
+                    return []
     except Exception as e:
-        logger.error(f"Check subscription error for @{channel_username}: {e}")
+        logger.error(f"PiarFlow ошибка: {e}")
+        return []
+
+async def check_piar_sponsors(user_id: int, links: List[str]) -> bool:
+    if not links:
+        return True
+    
+    url = f"{PIARFLOW_API_URL}/sponsors/check"
+    payload = {"user_id": user_id, "links": links}
+    headers = {"Authorization": f"Bearer {PIARFLOW_API_KEY}", "Content-Type": "application/json"}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    sponsors = data.get("sponsors", [])
+                    return all(s.get("status") in ["subscribed", "not_counted"] for s in sponsors)
+                elif resp.status == 404:
+                    logger.info(f"PiarFlow check: 404 (заданий нет) для user_id={user_id}")
+                    return True
+                logger.error(f"PiarFlow check ошибка: HTTP {resp.status}")
+                return False
+    except Exception as e:
+        logger.error(f"PiarFlow check ошибка: {e}")
         return False
 
+async def check_manual_sponsors(user_id: int) -> bool:
+    for sponsor in db.get_sponsors():
+        sponsor_type = sponsor.get("type", "channel")
+        if sponsor_type == "channel":
+            if "channel_id" in sponsor and sponsor["channel_id"]:
+                if not await check_channel_subscription(user_id, sponsor["channel_id"]):
+                    return False
+        elif sponsor_type == "addlist":
+            for cid in sponsor.get("channel_ids", []):
+                if not await check_channel_subscription(user_id, cid):
+                    return False
+    return True
 
-async def check_all_sponsor_subscriptions(user_id: int) -> Tuple[bool, List[str]]:
-    sponsors = db.get_sponsors()
-    active_sponsors = [s for s in sponsors if s.get("channel_username")]
+async def check_channel_subscription(user_id: int, channel_id: str) -> bool:
+    try:
+        member = await bot.get_chat_member(channel_id, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception:
+        return False
 
-    if not active_sponsors:
-        return True, []
+async def check_all_subscriptions(user_id: int, chat_id: int, use_shown_links: bool = False) -> bool:
+    manual_task = asyncio.create_task(check_manual_sponsors(user_id))
 
-    tasks = [
-        check_channel_subscription(user_id, sponsor["channel_username"])
-        for sponsor in active_sponsors
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    if use_shown_links and user_id in _shown_piar_links:
+        links = _shown_piar_links[user_id]
+        manual_ok = await manual_task
+        if not manual_ok:
+            return False
+        if links:
+            return await check_piar_sponsors(user_id, links)
+        return True
 
-    failed = []
-    for sponsor, is_subbed in zip(active_sponsors, results):
-        if is_subbed is not True:
-            failed.append(sponsor.get("button_text", f"@{sponsor['channel_username']}"))
+    piar_task = asyncio.create_task(fetch_piar_sponsors(user_id, chat_id))
 
-    return len(failed) == 0, failed
+    manual_ok = await manual_task
+    if not manual_ok:
+        return False
 
+    piar_sponsors = await piar_task
+    links = [s.get("link") for s in piar_sponsors if s.get("link")]
+    if links:
+        return await check_piar_sponsors(user_id, links)
+
+    return True
+
+def invalidate_piar_cache(user_id: int):
+    for key in list(_piar_cache.keys()):
+        if key.startswith(str(user_id)):
+            del _piar_cache[key]
 
 # ======================== КЛАВИАТУРЫ ========================
 def create_button(
@@ -666,54 +1119,58 @@ def create_button(
         button_kwargs["style"] = style
     return InlineKeyboardButton(**button_kwargs)
 
-
-def sponsors_gate_keyboard(tgrass_offers: List[Dict] = None) -> InlineKeyboardMarkup:
-    sponsor_buttons = []
-
-    for sponsor in db.get_sponsors():
-        sponsor_buttons.append(
-            create_button(
-                sponsor["button_text"],
-                db.get_button_emoji("earn"),
-                "📢",
-                style="primary",
-                url=sponsor["link"]
-            )
-        )
-
-    for offer in (tgrass_offers or []):
-        link = offer.get("link")
+def create_sponsor_keyboard(piar_sponsors: List[Dict] = None) -> Optional[InlineKeyboardMarkup]:
+    sponsors = db.get_sponsors()
+    piar_sponsors = piar_sponsors or []
+    
+    if not sponsors and not piar_sponsors:
+        return None
+    
+    keyboard = []
+    
+    # Ручные спонсоры
+    row = []
+    for sponsor in sponsors:
+        row.append(create_button(
+            sponsor["button_text"],
+            EMOJI_COINS,
+            style="primary",
+            url=sponsor["link"]
+        ))
+        if len(row) >= 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    # PiarFlow спонсоры
+    row = []
+    for s in piar_sponsors:
+        link = s.get("link")
         if not link:
             continue
-        title = offer.get("name") or offer.get("title") or "Канал"
-        sponsor_buttons.append(
-            create_button(title, db.get_button_emoji("earn"), "📢", style="primary", url=link)
-        )
-
-    keyboard = []
-    total = len(sponsor_buttons)
-    i = 0
-    while i < total:
-        remaining = total - i
-        if remaining == 1:
-            keyboard.append([sponsor_buttons[i]])
-            i += 1
-        else:
-            keyboard.append([sponsor_buttons[i], sponsor_buttons[i + 1]])
-            i += 2
-
+        row.append(create_button(
+            "📢 Канал",
+            EMOJI_COINS,
+            style="primary",
+            url=link
+        ))
+        if len(row) >= 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
     keyboard.append([
         create_button(
             "Я подписался, проверить",
-            db.get_button_emoji("withdraw"),
-            "✅",
+            DEFAULT_EMOJI_CHECK,
             style="success",
             callback_data="verify_sponsors"
         )
     ])
-
+    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     btn_earn = db.get_button_text("earn")
@@ -721,215 +1178,213 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     btn_top = db.get_button_text("top")
     btn_profile = db.get_button_text("profile")
     btn_withdraw = db.get_button_text("withdraw")
-
+    
     emoji_earn = db.get_button_emoji("earn")
     emoji_referrals = db.get_button_emoji("referrals")
     emoji_top = db.get_button_emoji("top")
     emoji_profile = db.get_button_emoji("profile")
     emoji_withdraw = db.get_button_emoji("withdraw")
-
+    
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            create_button(btn_earn, emoji_earn, "💰", style="primary", callback_data="menu_earn")
+            create_button(btn_earn, emoji_earn, style="primary", callback_data="menu_earn")
         ],
         [
-            create_button(btn_referrals, emoji_referrals, "👥", style="primary", callback_data="menu_referrals"),
-            create_button(btn_top, emoji_top, "🏆", style="primary", callback_data="menu_top"),
+            create_button(btn_referrals, emoji_referrals, style="primary", callback_data="menu_referrals"),
+            create_button(btn_top, emoji_top, style="primary", callback_data="menu_top"),
         ],
         [
-            create_button(btn_profile, emoji_profile, "👤", style="primary", callback_data="menu_profile"),
+            create_button(btn_profile, emoji_profile, style="primary", callback_data="menu_profile"),
         ],
         [
-            create_button(btn_withdraw, emoji_withdraw, "💳", style="success", callback_data="menu_withdraw"),
+            create_button(btn_withdraw, emoji_withdraw, style="success", callback_data="menu_withdraw"),
+        ],
+        [
+            create_button("Промокод", emoji_earn, style="primary", callback_data="menu_promo"),
+            create_button("История", emoji_profile, style="primary", callback_data="menu_history"),
         ],
     ])
-
 
 def earn_keyboard(has_offer: bool) -> InlineKeyboardMarkup:
     rows = []
     if has_offer:
         rows.append([
-            create_button("Проверить выполнение", db.get_button_emoji("withdraw"), "✅", style="success", callback_data="check_task")
+            create_button("Проверить выполнение", DEFAULT_EMOJI_CHECK, style="success", callback_data="check_task")
         ])
     rows.append([
-        create_button("Рефералы", db.get_button_emoji("referrals"), "👥", style="primary", callback_data="menu_referrals"),
-        create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main"),
+        create_button("Рефералы", db.get_button_emoji("referrals"), style="primary", callback_data="menu_referrals"),
+        create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def referral_keyboard(user_id: int) -> InlineKeyboardMarkup:
     bot_username = bot.username if hasattr(bot, 'username') and bot.username else "Earn_TMTRublBot"
     link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-
+    
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button(
             "Пригласить друга",
             db.get_button_emoji("top"),
-            "🚀",
             style="primary",
             url=f"tg://msg?text=Присоединяйся к боту для заработка!\n{link}"
         )],
-        [create_button("Мои рефералы", db.get_button_emoji("profile"), "📋", callback_data="referrals_list")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main")]
+        [create_button("Мои рефералы", db.get_button_emoji("profile"), style="primary", callback_data="referrals_list")],
+        [create_button("Статистика рефералов", db.get_button_emoji("top"), style="primary", callback_data="referrals_stats")],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
     ])
-
 
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Вывести средства", db.get_button_emoji("withdraw"), "💳", style="success", callback_data="menu_withdraw")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main")]
+        [create_button("Вывести средства", db.get_button_emoji("withdraw"), style="success", callback_data="menu_withdraw")],
+        [create_button("История транзакций", db.get_button_emoji("profile"), style="primary", callback_data="menu_history")],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
     ])
-
 
 def withdraw_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Вывести в ₽", db.get_button_emoji("earn"), "💰", style="primary", callback_data="withdraw_rub")],
-        [create_button("Вывести в ТМТ", db.get_button_emoji("earn"), "💰", style="primary", callback_data="withdraw_manat")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main")]
+        [create_button("Вывести в ₽", db.get_button_emoji("earn"), style="primary", callback_data="withdraw_rub")],
+        [create_button("Вывести в ТМТ", db.get_button_emoji("earn"), style="primary", callback_data="withdraw_manat")],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
     ])
-
 
 def back_keyboard(callback_data: str = "menu_main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data=callback_data)]
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data=callback_data)]
     ])
-
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            create_button("Статистика", db.get_button_emoji("profile"), "📊", callback_data="admin_stats"),
-            create_button("Пользователи", db.get_button_emoji("referrals"), "👥", callback_data="admin_users")
+            create_button("Статистика", db.get_button_emoji("profile"), style="primary", callback_data="admin_stats"),
+            create_button("Пользователи", db.get_button_emoji("referrals"), style="primary", callback_data="admin_users")
         ],
         [
-            create_button("Текст старта", db.get_button_emoji("withdraw"), "📝", callback_data="admin_start_text"),
-            create_button("Спонсоры/Задания", db.get_button_emoji("earn"), "📺", callback_data="admin_sponsors")
+            create_button("Текст старта", DEFAULT_EMOJI_CHECK, style="primary", callback_data="admin_start_text"),
+            create_button("Спонсоры/Задания", db.get_button_emoji("earn"), style="primary", callback_data="admin_sponsors")
         ],
         [
-            create_button("Текст кнопок", db.get_button_emoji("profile"), "🧩", callback_data="admin_button_texts"),
-            create_button("Эмодзи кнопок", db.get_button_emoji("star"), "🎨", callback_data="admin_button_emojis")
+            create_button("Текст кнопок", db.get_button_emoji("profile"), style="primary", callback_data="admin_button_texts"),
+            create_button("Эмодзи кнопок", db.get_button_emoji("star"), style="primary", callback_data="admin_button_emojis")
         ],
         [
-            create_button("Баннер", db.get_button_emoji("top"), "🖼", callback_data="admin_banner"),
-            create_button("Награда реферала", db.get_button_emoji("earn"), "🎁", callback_data="admin_referral_reward")
+            create_button("Баннер", db.get_button_emoji("top"), style="primary", callback_data="admin_banner"),
+            create_button("Награда реферала", db.get_button_emoji("earn"), style="primary", callback_data="admin_referral_reward")
         ],
         [
-            create_button("Рассылка", db.get_button_emoji("fire"), "📢", callback_data="admin_broadcast"),
-            create_button("Бан/Разбан", db.get_button_emoji("withdraw"), "🚫", callback_data="admin_ban")
+            create_button("Промокоды", db.get_button_emoji("earn"), style="primary", callback_data="admin_promocode"),
+            create_button("Экспорт CSV", db.get_button_emoji("top"), style="primary", callback_data="admin_export_csv")
         ],
         [
-            create_button("Статус бота", db.get_button_emoji("profile"), "⚡", callback_data="admin_status"),
-            create_button("TGRAS debug", db.get_button_emoji("top"), "🔍", callback_data="admin_tgras_debug")
+            create_button("Рассылка", db.get_button_emoji("fire"), style="primary", callback_data="admin_broadcast"),
+            create_button("Бан/Разбан", DEFAULT_EMOJI_CHECK, style="danger", callback_data="admin_ban")
         ],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main")]
+        [
+            create_button("Статус бота", db.get_button_emoji("profile"), style="primary", callback_data="admin_status"),
+            create_button("PiarFlow debug", db.get_button_emoji("top"), style="primary", callback_data="admin_piarflow_debug")
+        ],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
     ])
-
 
 def admin_sponsors_keyboard() -> InlineKeyboardMarkup:
     sponsors = db.get_sponsors()
     keyboard = []
-
+    
     for i, sponsor in enumerate(sponsors):
-        channel = sponsor.get("channel_username", "")
-        display = f"{i+1}. {sponsor['button_text']}"
-        if channel:
-            display += f" (@{channel})"
+        s_type = sponsor.get("type", "channel")
+        type_emoji = "📺" if s_type == "channel" else "📋" if s_type == "addlist" else "🔘"
+        display = f"{i+1}. {type_emoji} {sponsor['button_text']}"
         keyboard.append([
-            InlineKeyboardButton(text=display[:50], callback_data=f"admin_sponsor_{i}"),
-            InlineKeyboardButton(text="🗑", callback_data=f"admin_sponsor_del_{i}")
+            create_button(display[:50], style="primary", callback_data=f"admin_sponsor_{i}"),
+            create_button("🗑", style="danger", callback_data=f"admin_sponsor_del_{i}")
         ])
-
-    keyboard.append([create_button("Добавить спонсора/задание", db.get_button_emoji("earn"), "➕", style="success", callback_data="admin_sponsor_add")])
-    keyboard.append([create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="admin_panel")])
-
+    
+    keyboard.append([
+        create_button("Добавить канал", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_channel"),
+        create_button("Добавить Addlist", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_addlist")
+    ])
+    keyboard.append([create_button("Добавить кнопку", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_button")])
+    keyboard.append([create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")])
+    
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def admin_button_texts_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button(f"💰 {db.get_button_text('earn')}", db.get_button_emoji("earn"), callback_data="admin_btn_earn")],
-        [create_button(f"👥 {db.get_button_text('referrals')}", db.get_button_emoji("referrals"), callback_data="admin_btn_referrals")],
-        [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), callback_data="admin_btn_top")],
-        [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), callback_data="admin_btn_profile")],
-        [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), callback_data="admin_btn_withdraw")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="admin_panel")]
+        [create_button(f"💰 {db.get_button_text('earn')}", db.get_button_emoji("earn"), style="primary", callback_data="admin_btn_earn")],
+        [create_button(f"👥 {db.get_button_text('referrals')}", db.get_button_emoji("referrals"), style="primary", callback_data="admin_btn_referrals")],
+        [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), style="primary", callback_data="admin_btn_top")],
+        [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), style="primary", callback_data="admin_btn_profile")],
+        [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), style="primary", callback_data="admin_btn_withdraw")],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
     ])
-
 
 def admin_button_emojis_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button(f"💰 {db.get_button_text('earn')}", db.get_button_emoji("earn"), callback_data="admin_emoji_earn")],
-        [create_button(f"👥 {db.get_button_text('referrals')}", db.get_button_emoji("referrals"), callback_data="admin_emoji_referrals")],
-        [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), callback_data="admin_emoji_top")],
-        [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), callback_data="admin_emoji_profile")],
-        [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), callback_data="admin_emoji_withdraw")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="admin_panel")]
+        [create_button(f"💰 {db.get_button_text('earn')}", db.get_button_emoji("earn"), style="primary", callback_data="admin_emoji_earn")],
+        [create_button(f"👥 {db.get_button_text('referrals')}", db.get_button_emoji("referrals"), style="primary", callback_data="admin_emoji_referrals")],
+        [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), style="primary", callback_data="admin_emoji_top")],
+        [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), style="primary", callback_data="admin_emoji_profile")],
+        [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), style="primary", callback_data="admin_emoji_withdraw")],
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
     ])
-
 
 def admin_banner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button("📤 Загрузить баннер", db.get_button_emoji("earn"), style="success", callback_data="banner_upload")],
-        [create_button("🗑 Удалить баннер", db.get_button_emoji("withdraw"), style="danger", callback_data="banner_delete")],
-        [create_button("🔙 Назад", db.get_button_emoji("withdraw"), callback_data="admin_panel")]
+        [create_button("🗑 Удалить баннер", DEFAULT_EMOJI_CHECK, style="danger", callback_data="banner_delete")],
+        [create_button("🔙 Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
     ])
-
 
 def admin_referral_reward_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Изменить награду (₽)", db.get_button_emoji("earn"), callback_data="admin_reward_rub")],
-        [create_button("Изменить награду (ТМТ)", db.get_button_emoji("earn"), callback_data="admin_reward_manat")],
-        [create_button("🔙 Назад", db.get_button_emoji("withdraw"), callback_data="admin_panel")]
+        [create_button("Изменить награду (₽)", db.get_button_emoji("earn"), style="primary", callback_data="admin_reward_rub")],
+        [create_button("Изменить награду (ТМТ)", db.get_button_emoji("earn"), style="primary", callback_data="admin_reward_manat")],
+        [create_button("🔙 Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
     ])
-
 
 def admin_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     users = list(db.data["users"].values())
     per_page = 10
     total_pages = max((len(users) + per_page - 1) // per_page, 1)
-
+    
     start = page * per_page
     end = min(start + per_page, len(users))
     current_users = users[start:end]
-
+    
     keyboard = []
     for user in current_users:
         status = "🚫" if user.get("is_banned", False) else "✅"
         keyboard.append([
-            InlineKeyboardButton(text=f"{status} ID {user['id']}", callback_data=f"admin_user_{user['id']}")
+            create_button(f"{status} ID {user['id']}", style="primary", callback_data=f"admin_user_{user['id']}")
         ])
-
+    
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin_users_page_{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="admin_users_page_info"))
+        nav.append(create_button("⬅️", style="primary", callback_data=f"admin_users_page_{page-1}"))
+    nav.append(create_button(f"{page+1}/{total_pages}", callback_data="admin_users_page_info"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin_users_page_{page+1}"))
+        nav.append(create_button("➡️", style="primary", callback_data=f"admin_users_page_{page+1}"))
     if nav:
         keyboard.append(nav)
-
-    keyboard.append([create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="admin_panel")])
+    
+    keyboard.append([create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 
 def user_actions_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            create_button("+Баланс", db.get_button_emoji("earn"), "💰", style="success", callback_data=f"admin_user_add_balance_{user_id}"),
-            create_button("-Баланс", db.get_button_emoji("earn"), "💰", style="danger", callback_data=f"admin_user_sub_balance_{user_id}")
+            create_button("+Баланс", db.get_button_emoji("earn"), style="success", callback_data=f"admin_user_add_balance_{user_id}"),
+            create_button("-Баланс", db.get_button_emoji("earn"), style="danger", callback_data=f"admin_user_sub_balance_{user_id}")
         ],
         [
-            create_button("+Рефералы", db.get_button_emoji("referrals"), "👥", style="success", callback_data=f"admin_user_add_ref_{user_id}"),
-            create_button("Обнулить рефералы", db.get_button_emoji("referrals"), "🔄", style="danger", callback_data=f"admin_user_reset_ref_{user_id}")
+            create_button("+Рефералы", db.get_button_emoji("referrals"), style="success", callback_data=f"admin_user_add_ref_{user_id}"),
+            create_button("Обнулить рефералы", db.get_button_emoji("referrals"), style="danger", callback_data=f"admin_user_reset_ref_{user_id}")
         ],
         [
-            create_button("Бан", db.get_button_emoji("fire"), "🚫", style="danger", callback_data=f"admin_user_ban_{user_id}"),
-            create_button("Разбан", db.get_button_emoji("withdraw"), "🔓", style="success", callback_data=f"admin_user_unban_{user_id}")
+            create_button("Бан", db.get_button_emoji("fire"), style="danger", callback_data=f"admin_user_ban_{user_id}"),
+            create_button("Разбан", DEFAULT_EMOJI_CHECK, style="success", callback_data=f"admin_user_unban_{user_id}")
         ],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="admin_users")]
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_users")]
     ])
-
 
 # ======================== СОСТОЯНИЯ FSM ========================
 class AdminStates(StatesGroup):
@@ -937,6 +1392,8 @@ class AdminStates(StatesGroup):
     waiting_for_sponsor_name = State()
     waiting_for_sponsor_link = State()
     waiting_for_sponsor_channel = State()
+    waiting_for_sponsor_channel_id = State()
+    waiting_for_sponsor_addlist_ids = State()
     waiting_for_broadcast_text = State()
     waiting_for_balance_amount = State()
     waiting_for_referral_count = State()
@@ -946,11 +1403,16 @@ class AdminStates(StatesGroup):
     waiting_for_banner = State()
     waiting_for_reward_rub = State()
     waiting_for_reward_manat = State()
-
+    waiting_for_promocode = State()
+    waiting_for_piarflow_test_id = State()
 
 class WithdrawStates(StatesGroup):
     waiting_for_amount = State()
+    waiting_for_phone = State()
+    waiting_for_details = State()
 
+class UserStates(StatesGroup):
+    waiting_for_promo = State()
 
 # ======================== ХЕЛПЕРЫ ========================
 async def is_banner_valid() -> bool:
@@ -974,7 +1436,6 @@ async def is_banner_valid() -> bool:
         db.remove_banner()
         return False
 
-
 async def safe_edit_or_send(
     callback_message: Message,
     text: str,
@@ -982,7 +1443,7 @@ async def safe_edit_or_send(
     entities: List[MessageEntity] = None
 ):
     safe_entities = strip_custom_emoji_entities(entities)
-
+    
     if callback_message.photo:
         if len(text) <= 1024:
             try:
@@ -1003,13 +1464,13 @@ async def safe_edit_or_send(
                     return
                 except Exception as e2:
                     logger.error(f"Ошибка edit_caption (fallback): {e2}")
-
+        
         chat_id = callback_message.chat.id
         try:
             await callback_message.delete()
         except Exception:
             pass
-
+        
         try:
             await bot.send_message(
                 chat_id,
@@ -1055,27 +1516,22 @@ async def safe_edit_or_send(
                         reply_markup=reply_markup
                     )
 
-
 async def send_main_menu(target_message: Message, edit: bool = False):
     start_text = db.get_start_text()
     reward_rub = db.get_referral_reward_rub()
     reward_manat = db.get_referral_reward_manat()
-    try:
-        clean_text, entities = format_with_emoji(
-            start_text,
-            EMOJI_STAR=db.get_button_emoji("profile"),
-            EMOJI_COINS=db.get_button_emoji("earn"),
-            REFERRAL_REWARD_RUB=reward_rub,
-            REFERRAL_REWARD_MANAT=reward_manat
-        )
-    except (KeyError, ValueError, IndexError) as e:
-        logger.error(f"Невалидный start_text, использую заглушку: {e}")
-        clean_text, entities = (
-            "👋 Добро пожаловать в бот заработка!",
-            []
-        )
+    
+    # Используем format_with_emoji для применения парсинга
+    clean_text, entities = format_with_emoji(
+        start_text,
+        EMOJI_STAR=db.get_button_emoji("profile"),
+        EMOJI_COINS=db.get_button_emoji("earn"),
+        REFERRAL_REWARD_RUB=reward_rub,
+        REFERRAL_REWARD_MANAT=reward_manat
+    )
+    
     kb = main_menu_keyboard()
-
+    
     if await is_banner_valid():
         try:
             photo = FSInputFile(db.get_banner())
@@ -1105,7 +1561,7 @@ async def send_main_menu(target_message: Message, edit: bool = False):
         except Exception as e:
             logger.error(f"Ошибка отправки баннера: {e}")
             db.remove_banner()
-
+    
     if edit:
         await safe_edit_or_send(target_message, clean_text, kb, entities)
     else:
@@ -1117,22 +1573,17 @@ async def send_main_menu(target_message: Message, edit: bool = False):
             if safe_entities is not None:
                 await target_message.answer(clean_text, entities=safe_entities, reply_markup=kb)
 
-
-async def send_sponsors_gate(target_message: Message, user_id: int, edit: bool = False):
-    tgrass_offers = await get_tgrass_sponsors(user_id)
+async def send_sponsors_gate(target_message: Message, user_id: int, chat_id: int, edit: bool = False):
+    piar_sponsors = await fetch_piar_sponsors(user_id, chat_id)
     manual_sponsors = db.get_sponsors()
-    logger.info(
-        f"[sponsors_gate] user_id={user_id} "
-        f"manual_sponsors={len(manual_sponsors)} "
-        f"tgrass_offers={len(tgrass_offers)} "
-        f"tgrass_links={[o.get('link') for o in tgrass_offers]}"
-    )
-    raw_text = (
-        f'<emoji id="{EMOJI_LOCK}">🔒</emoji> Для доступа к боту подпишитесь на '
-        f'все каналы ниже, затем нажмите «Проверить».'
-    )
+    logger.info(f"[sponsors_gate] user_id={user_id} manual={len(manual_sponsors)} piar={len(piar_sponsors)}")
+
+    _shown_piar_links[user_id] = [s.get("link") for s in piar_sponsors if s.get("link")]
+
+    raw_text = f'<emoji id="{EMOJI_LOCK}">🔒</emoji> Для доступа к боту подпишитесь на все каналы ниже, затем нажмите «Проверить».'
     clean_text, entities = parse_premium_emoji(raw_text)
-    kb = sponsors_gate_keyboard(tgrass_offers)
+    kb = create_sponsor_keyboard(piar_sponsors)
+    
     if edit:
         await safe_edit_or_send(target_message, clean_text, kb, entities)
     else:
@@ -1146,15 +1597,13 @@ async def send_sponsors_gate(target_message: Message, user_id: int, edit: bool =
             else:
                 await target_message.answer(clean_text, reply_markup=kb)
 
-
-async def user_needs_gate(user_id: int) -> bool:
+async def user_needs_gate(user_id: int, chat_id: int) -> bool:
     if db.is_verified(user_id):
         return False
     if db.get_sponsors():
         return True
-    tgrass_offers = await get_tgrass_sponsors(user_id)
-    return bool(tgrass_offers)
-
+    piar_sponsors = await fetch_piar_sponsors(user_id, chat_id)
+    return bool(piar_sponsors)
 
 async def try_confirm_referral(user_id: int):
     referrer_id = db.confirm_referral_reward(user_id)
@@ -1182,38 +1631,60 @@ async def try_confirm_referral(user_id: int):
     except Exception:
         pass
 
+# ======================== ФОНОВЫЕ ЗАДАЧИ ========================
+async def check_inactive_users():
+    while True:
+        try:
+            inactive_users = db.get_inactive_users(INACTIVE_DAYS)
+            for user_id in inactive_users:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"⏰ <b>Вы давно не заходили!</b>\n\n"
+                        f"У нас появились новые задания и промокоды. "
+                        f"Заходите, чтобы заработать! 🚀",
+                        parse_mode="HTML"
+                    )
+                    db.update_activity(user_id)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+            await asyncio.sleep(3600 * 12)
+        except Exception as e:
+            logger.error(f"Ошибка в check_inactive_users: {e}")
+            await asyncio.sleep(60)
 
 # ======================== ОБРАБОТЧИКИ КОМАНД ========================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
-
+    
     if db.is_banned(user_id):
         await message.answer("🚫 Вы забанены в этом боте!")
         return
-
+    
     if db.is_bot_stopped():
         await message.answer("⏸ Бот временно не работает. Попробуйте позже.")
         return
-
+    
     db.get_user(user_id)
-
+    db.update_activity(user_id)
+    
     if len(args) > 1 and args[1].startswith("ref_"):
         ref_part = args[1][4:]
         if ref_part.isdigit():
             referrer_id = int(ref_part)
             if referrer_id != user_id and str(referrer_id) in db.data["users"]:
                 db.link_referral(referrer_id, user_id)
-
-    needs_gate = await user_needs_gate(user_id)
+    
+    needs_gate = await user_needs_gate(user_id, message.chat.id)
     if needs_gate:
-        await send_sponsors_gate(message, user_id)
+        await send_sponsors_gate(message, user_id, message.chat.id)
         return
-
+    
     await try_confirm_referral(user_id)
     await send_main_menu(message)
-
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
@@ -1223,72 +1694,70 @@ async def cmd_admin(message: Message):
         return
     await message.answer("🛠 Админ панель", reply_markup=admin_panel_keyboard())
 
-
 # ======================== ПРОВЕРКА ПОДПИСКИ ========================
 @dp.callback_query(F.data == "verify_sponsors")
 async def verify_sponsors(callback: CallbackQuery):
     user_id = callback.from_user.id
-
+    
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-
-    invalidate_tgrass_cache(user_id)
-
-    ok_manual, failed_manual = await check_all_sponsor_subscriptions(user_id)
-    ok_tgrass = await check_tgrass_subscriptions(user_id)
-
-    failed = list(failed_manual)
-    if not ok_tgrass:
-        failed.append("Спонсорские каналы (TGRAS)")
-
-    if ok_manual and ok_tgrass:
+    
+    ok = await check_all_subscriptions(user_id, callback.message.chat.id, use_shown_links=True)
+    
+    if ok:
         db.set_verified(user_id, True)
+        _shown_piar_links.pop(user_id, None)
         await try_confirm_referral(user_id)
         await callback.answer("✅ Подписка подтверждена!")
         await send_main_menu(callback.message, edit=True)
     else:
-        failed_text = "\n".join(f"• {f}" for f in failed)
         await callback.answer(
-            f"❌ Вы подписаны не на все каналы:\n{failed_text}",
+            "❌ Вы подписаны не на все каналы!\nПроверьте подписки и нажмите снова.",
             show_alert=True
         )
 
+@dp.callback_query(F.data == "noop")
+async def noop_callback(callback: CallbackQuery):
+    await callback.answer()
 
 # ======================== ГЛАВНОЕ МЕНЮ ========================
 @dp.callback_query(F.data == "menu_main")
 async def menu_main(callback: CallbackQuery):
     user_id = callback.from_user.id
-
+    
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     await send_main_menu(callback.message, edit=True)
     await callback.answer()
-
 
 # ======================== ЗАРАБОТОК ========================
 @dp.callback_query(F.data == "menu_earn")
 async def menu_earn(callback: CallbackQuery):
     user_id = callback.from_user.id
-
+    
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     tasks_left = db.get_tasks_left_today(user_id)
-
+    
     if tasks_left <= 0:
         raw_text = (
             f'<emoji id="{EMOJI_TASK_HOURGLASS}">⏳</emoji> <b>Заработок на сегодня</b>\n\n'
@@ -1299,18 +1768,18 @@ async def menu_earn(callback: CallbackQuery):
         await safe_edit_or_send(callback.message, clean_text, earn_keyboard(has_offer=False), entities)
         await callback.answer()
         return
-
+    
     sponsors = db.get_sponsors()
-
+    
     task_sponsor = None
     for sponsor in sponsors:
-        channel = sponsor.get("channel_username")
+        channel = sponsor.get("channel_id")
         if channel:
             is_subscribed = await check_channel_subscription(user_id, channel)
             if not is_subscribed:
                 task_sponsor = sponsor
                 break
-
+    
     if not task_sponsor:
         if sponsors:
             raw_text = (
@@ -1322,7 +1791,7 @@ async def menu_earn(callback: CallbackQuery):
             await safe_edit_or_send(callback.message, clean_text, earn_keyboard(has_offer=False), entities)
             await callback.answer()
             return
-
+        
         raw_text = (
             '😔 <b>Сейчас нет доступных заданий</b>\n\n'
             'Попробуйте позже — новые задания появляются регулярно.'
@@ -1331,10 +1800,10 @@ async def menu_earn(callback: CallbackQuery):
         await safe_edit_or_send(callback.message, clean_text, earn_keyboard(has_offer=False), entities)
         await callback.answer()
         return
-
+    
     link = task_sponsor.get("link", "")
     title = task_sponsor.get("button_text", "Задание")
-
+    
     raw_text = (
         f'<emoji id="{EMOJI_TASK_MONEY}">💰</emoji> <b>Заработок</b>\n\n'
         f'<quote>📋 Задание: {title}\n'
@@ -1343,41 +1812,40 @@ async def menu_earn(callback: CallbackQuery):
         f'Подпишитесь по кнопке ниже, затем нажмите «Проверить выполнение».'
     )
     clean_text, entities = parse_premium_emoji(raw_text)
-
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Подписаться", db.get_button_emoji("withdraw"), "✅", style="primary", url=link)],
+        [create_button("Подписаться", DEFAULT_EMOJI_CHECK, "✅", style="primary", url=link)],
         [create_button("Проверить выполнение", db.get_button_emoji("profile"), "🔄", style="success", callback_data="check_task")],
-        [create_button("Назад", db.get_button_emoji("withdraw"), "🔙", callback_data="menu_main")]
+        [create_button("Назад", DEFAULT_EMOJI_CHECK, "🔙", callback_data="menu_main")]
     ])
-
+    
     await safe_edit_or_send(callback.message, clean_text, keyboard, entities)
     await callback.answer()
-
 
 @dp.callback_query(F.data == "check_task")
 async def check_task(callback: CallbackQuery):
     user_id = callback.from_user.id
-
+    
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-
+    
     tasks_left = db.get_tasks_left_today(user_id)
     if tasks_left <= 0:
         await callback.answer("Лимит заданий на сегодня исчерпан.", show_alert=True)
         return
-
+    
     sponsors = db.get_sponsors()
     all_subscribed = True
     failed = []
-
+    
     for sponsor in sponsors:
-        channel = sponsor.get("channel_username")
+        channel = sponsor.get("channel_id")
         if channel:
             if not await check_channel_subscription(user_id, channel):
                 all_subscribed = False
                 failed.append(sponsor.get("button_text"))
-
+    
     if all_subscribed:
         counted = db.register_task_completed(user_id)
         if counted:
@@ -1396,28 +1864,29 @@ async def check_task(callback: CallbackQuery):
         failed_text = "\n".join(f"• {f}" for f in failed)
         await callback.answer(f"❌ Вы подписаны не на все каналы:\n{failed_text}", show_alert=True)
 
-
 # ======================== РЕФЕРАЛЫ ========================
 @dp.callback_query(F.data == "menu_referrals")
 async def menu_referrals(callback: CallbackQuery):
     user_id = callback.from_user.id
-
+    
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     user = db.get_user(user_id)
     count = user["referral_count"]
     reward_rub = db.get_referral_reward_rub()
     reward_manat = db.get_referral_reward_manat()
     bot_username = bot.username if hasattr(bot, 'username') and bot.username else "Earn_TMTRublBot"
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
-
+    
     raw_text = f"""<emoji id="{db.get_button_emoji('referrals')}">🔥</emoji> <b>Реферальная система</b>
 
 <emoji id="{db.get_button_emoji('profile')}">⭐</emoji> Ваш ID: <b>{user_id}</b>
@@ -1428,21 +1897,20 @@ async def menu_referrals(callback: CallbackQuery):
 🚀 Заработано: {count * reward_rub:.2f}₽ / {count * reward_manat:.2f}ТМТ</quote>
 
 Поделитесь ссылкой с друзьями и получайте бонусы!"""
-
+    
     clean_text, entities = parse_premium_emoji(raw_text)
     await safe_edit_or_send(callback.message, clean_text, referral_keyboard(user_id), entities)
     await callback.answer()
-
 
 @dp.callback_query(F.data == "referrals_list")
 async def referrals_list(callback: CallbackQuery):
     user_id = callback.from_user.id
     referrals = db.get_referrals(user_id)
-
+    
     if not referrals:
         await callback.answer("У вас пока нет рефералов", show_alert=True)
         return
-
+    
     text = "📋 Мои рефералы:\n\n"
     for i, ref_id in enumerate(referrals, 1):
         try:
@@ -1452,10 +1920,24 @@ async def referrals_list(callback: CallbackQuery):
         except Exception:
             text += f"{i}. {ref_id}\n"
     text += f"\nВсего: {len(referrals)}"
-
+    
     await safe_edit_or_send(callback.message, text, back_keyboard("menu_referrals"))
     await callback.answer()
 
+@dp.callback_query(F.data == "referrals_stats")
+async def referrals_stats(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    stats = db.get_referral_stats(user_id)
+    
+    text = (
+        f"📊 <b>Статистика рефералов</b>\n\n"
+        f"Всего приглашено: <b>{stats['total']}</b>\n"
+        f"Активных (выполняют задания): <b>{stats['active']}</b>\n"
+        f"Неактивных: <b>{stats['inactive']}</b>\n"
+    )
+    
+    await safe_edit_or_send(callback.message, text, back_keyboard("menu_referrals"))
+    await callback.answer()
 
 # ======================== ТОП ========================
 @dp.callback_query(F.data == "menu_top")
@@ -1464,14 +1946,17 @@ async def menu_top(callback: CallbackQuery):
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     top = db.get_top_referrals(10)
     text = "🏆 Топ рефералов:\n\n"
-
+    
     if not top:
         text += "Пока нет лидеров. Будьте первым!"
     else:
@@ -1484,10 +1969,9 @@ async def menu_top(callback: CallbackQuery):
             except Exception:
                 name = str(uid)
             text += f"{medal} {name[:20]} — {count} рефералов\n"
-
+    
     await safe_edit_or_send(callback.message, text, back_keyboard("menu_main"))
     await callback.answer()
-
 
 # ======================== ПРОФИЛЬ ========================
 @dp.callback_query(F.data == "menu_profile")
@@ -1496,14 +1980,17 @@ async def menu_profile(callback: CallbackQuery):
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     user = db.get_user(user_id)
     tasks_left = db.get_tasks_left_today(user_id)
-
+    
     raw_text = f"""<emoji id="{db.get_button_emoji('profile')}">⭐</emoji> <b>Профиль</b>
 
 👤 ID: <b>{user_id}</b>
@@ -1515,11 +2002,65 @@ async def menu_profile(callback: CallbackQuery):
 <emoji id="{db.get_button_emoji('referrals')}">🔥</emoji> Рефералов: <b>{user["referral_count"]}</b>
 <emoji id="{db.get_button_emoji('top')}">🚀</emoji> Заданий выполнено всего: {user["tasks_completed"]}
 📊 Заданий сегодня: {MAX_TASKS_PER_DAY - tasks_left}/{MAX_TASKS_PER_DAY}"""
-
+    
     clean_text, entities = parse_premium_emoji(raw_text)
     await safe_edit_or_send(callback.message, clean_text, profile_keyboard(), entities)
     await callback.answer()
 
+# ======================== ИСТОРИЯ ТРАНЗАКЦИЙ ========================
+@dp.callback_query(F.data == "menu_history")
+async def menu_history(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    transactions = db.get_transactions(user_id, 20)
+    
+    if not transactions:
+        text = "📜 История транзакций пуста."
+    else:
+        text = "📜 <b>Последние транзакции</b>:\n\n"
+        for t in reversed(transactions):
+            emoji = "💰" if t["type"] in ["earn", "promo"] else "💸" if t["type"] == "withdraw" else "📊"
+            sign = "+" if t["amount"] > 0 else ""
+            text += f"{emoji} {t['date'][:10]} {sign}{t['amount']:.2f}₽ — {t.get('description', t['type'])}\n"
+    
+    await safe_edit_or_send(callback.message, text, back_keyboard("menu_profile"))
+    await callback.answer()
+
+# ======================== ПРОМОКОДЫ ========================
+@dp.callback_query(F.data == "menu_promo")
+async def menu_promo(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    
+    if db.is_banned(user_id):
+        await callback.answer("Вы забанены!")
+        return
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
+        await callback.answer()
+        return
+    
+    await state.set_state(UserStates.waiting_for_promo)
+    await safe_edit_or_send(
+        callback.message,
+        "🎫 Введите промокод:",
+        back_keyboard("menu_main")
+    )
+    await callback.answer()
+
+@dp.message(UserStates.waiting_for_promo)
+async def process_promo_code(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    code = message.text.strip()
+    reward = db.use_promocode(user_id, code)
+    
+    if reward is None:
+        await message.answer("❌ Неверный или уже использованный промокод!")
+    else:
+        await message.answer(f"✅ Промокод активирован! Вы получили {reward:.2f}₽ / {reward * RATE_MANAT:.2f}ТМТ")
+    
+    await state.clear()
 
 # ======================== ВЫВОД СРЕДСТВ ========================
 @dp.callback_query(F.data == "menu_withdraw")
@@ -1528,13 +2069,16 @@ async def menu_withdraw(callback: CallbackQuery):
     if db.is_banned(user_id):
         await callback.answer("Вы забанены!")
         return
-    if await user_needs_gate(user_id):
-        await send_sponsors_gate(callback.message, user_id, edit=True)
+    
+    db.update_activity(user_id)
+    
+    if await user_needs_gate(user_id, callback.message.chat.id):
+        await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
         await callback.answer()
         return
-
+    
     user = db.get_user(user_id)
-
+    
     raw_text = f"""<emoji id="{db.get_button_emoji('earn')}">💰</emoji> <b>Вывод средств</b>
 
 <quote>⭐ Ваш баланс:
@@ -1546,18 +2090,17 @@ async def menu_withdraw(callback: CallbackQuery):
 • <b>{MIN_WITHDRAW_MANAT:.1f} ТМТ</b>
 
 Выберите валюту вывода:"""
-
+    
     clean_text, entities = parse_premium_emoji(raw_text)
     await safe_edit_or_send(callback.message, clean_text, withdraw_keyboard(), entities)
     await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("withdraw_"))
 async def withdraw_request(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     currency = callback.data.split("_")[1]
     user = db.get_user(user_id)
-
+    
     if currency == "rub":
         if user["balance_rub"] < MIN_WITHDRAW_RUB:
             await callback.answer(f"❌ Недостаточно средств. Минимум {MIN_WITHDRAW_RUB}₽", show_alert=True)
@@ -1566,7 +2109,8 @@ async def withdraw_request(callback: CallbackQuery, state: FSMContext):
         await state.set_state(WithdrawStates.waiting_for_amount)
         await safe_edit_or_send(
             callback.message,
-            f"💳 Вывод в ₽\n\nВаш баланс: {user['balance_rub']:.2f}₽\nМинимум: {MIN_WITHDRAW_RUB}₽\n\nВведите сумму вывода:",
+            f"💳 Вывод в ₽\n\nВаш баланс: {user['balance_rub']:.2f}₽\nМинимум: {MIN_WITHDRAW_RUB}₽\n\n"
+            f"Введите сумму вывода:\n\n<i>После ввода суммы укажите реквизиты для перевода (номер карты/кошелька)</i>",
             back_keyboard("menu_withdraw")
         )
     elif currency == "manat":
@@ -1577,49 +2121,12 @@ async def withdraw_request(callback: CallbackQuery, state: FSMContext):
         await state.set_state(WithdrawStates.waiting_for_amount)
         await safe_edit_or_send(
             callback.message,
-            f"💳 Вывод в ТМТ\n\nВаш баланс: {user['balance_manat']:.2f}ТМТ\nМинимум: {MIN_WITHDRAW_MANAT:.1f}ТМТ\n\nВведите сумму вывода:",
+            f"💳 Вывод в ТМТ\n\nВаш баланс: {user['balance_manat']:.2f}ТМТ\nМинимум: {MIN_WITHDRAW_MANAT:.1f}ТМТ\n\n"
+            f"Введите сумму вывода:\n\n<i>После ввода суммы укажите номер телефона в формате +993XXXXXXXXX</i>",
             back_keyboard("menu_withdraw")
         )
-
+    
     await callback.answer()
-
-
-async def send_withdrawal_check(withdrawal_id: int, user_id: int, amount_display: float, currency: str):
-    currency_label = "₽" if currency == "rub" else "ТМТ"
-    try:
-        user_chat = await bot.get_chat(user_id)
-        username_part = f" (@{user_chat.username})" if user_chat.username else ""
-    except Exception:
-        username_part = ""
-
-    raw_text = (
-        f'<emoji id="{EMOJI_TASK_MONEY}">💵</emoji> <b>Новая заявка на вывод</b>\n\n'
-        f'<quote>Заявка №{withdrawal_id}\n'
-        f'Пользователь: {user_id}{username_part}\n'
-        f'Сумма: {amount_display:.2f} {currency_label}</quote>\n\n'
-        f'Статус: ⏳ Ожидает обработки'
-    )
-    clean_text, entities = parse_premium_emoji(raw_text)
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            create_button("Отклонить", db.get_button_emoji("withdraw"), "❌", style="danger",
-                          callback_data=f"wd_reject_{withdrawal_id}"),
-            create_button("Выплачено", db.get_button_emoji("withdraw"), "✅", style="success",
-                          callback_data=f"wd_paid_{withdrawal_id}")
-        ]
-    ])
-
-    try:
-        sent = await bot.send_message(
-            PAYMENTS_CHANNEL, clean_text,
-            entities=entities if entities else None,
-            reply_markup=keyboard
-        )
-        db.set_withdrawal_channel_message(withdrawal_id, sent.message_id)
-    except Exception as e:
-        logger.error(f"Не удалось отправить чек на вывод в канал {PAYMENTS_CHANNEL}: {e}")
-
 
 @dp.message(WithdrawStates.waiting_for_amount)
 async def process_withdraw_amount(message: Message, state: FSMContext):
@@ -1631,87 +2138,152 @@ async def process_withdraw_amount(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите корректное число.")
         return
-
+    
+    await state.update_data(amount=amount)
     data = await state.get_data()
-    currency = data.get("withdraw_currency", "rub")
+    currency = data.get("withdraw_currency")
+    
+    if currency == "rub":
+        await state.set_state(WithdrawStates.waiting_for_details)
+        await message.answer("💳 Введите реквизиты для перевода (номер карты или кошелька):")
+    else:
+        await state.set_state(WithdrawStates.waiting_for_phone)
+        await message.answer("📱 Введите номер телефона в формате +993XXXXXXXXX:")
+
+@dp.message(WithdrawStates.waiting_for_phone)
+async def process_withdraw_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    if not phone.startswith("+993") or len(phone) < 13:
+        await message.answer("❌ Неверный формат! Введите номер в формате +993XXXXXXXXX")
+        return
+    
+    await state.update_data(details=phone)
+    await finalize_withdrawal(message, state)
+
+@dp.message(WithdrawStates.waiting_for_details)
+async def process_withdraw_details(message: Message, state: FSMContext):
+    details = message.text.strip()
+    if len(details) < 5:
+        await message.answer("❌ Введите корректные реквизиты (минимум 5 символов)")
+        return
+    
+    await state.update_data(details=details)
+    await finalize_withdrawal(message, state)
+
+async def finalize_withdrawal(message: Message, state: FSMContext):
+    data = await state.get_data()
+    amount = data.get("amount")
+    currency = data.get("withdraw_currency")
+    details = data.get("details")
+    
     user_id = message.from_user.id
     user = db.get_user(user_id)
-
+    
     if currency == "rub":
-        if amount < MIN_WITHDRAW_RUB:
-            await message.answer(f"❌ Минимальная сумма вывода {MIN_WITHDRAW_RUB}₽")
-            return
         if amount > user["balance_rub"]:
             await message.answer(f"❌ Недостаточно средств. Ваш баланс: {user['balance_rub']:.2f}₽")
             return
         if db.deduct_balance(user_id, amount):
-            withdrawal_id = db.create_withdrawal(user_id, amount, "rub", amount)
-            await send_withdrawal_check(withdrawal_id, user_id, amount, "rub")
+            withdrawal_id = db.create_withdrawal(user_id, amount, "rub", amount, details)
+            db.add_transaction(user_id, "withdraw", -amount, f"Вывод {amount:.2f}₽")
+            await send_withdrawal_check(withdrawal_id, user_id, amount, "rub", details)
             await message.answer(
-                f"✅ Заявка на вывод {amount:.2f}₽ принята!\n\nОжидайте обработки в течение 24-48 часов.",
+                f"✅ Заявка на вывод {amount:.2f}₽ принята!\nРеквизиты: {details}\n\nОжидайте обработки в течение 1-12 часов.",
                 reply_markup=main_menu_keyboard()
             )
-        else:
-            await message.answer("❌ Ошибка при обработке заявки.")
-
-    elif currency == "manat":
-        if amount < MIN_WITHDRAW_MANAT:
-            await message.answer(f"❌ Минимальная сумма вывода {MIN_WITHDRAW_MANAT:.1f}ТМТ")
-            return
+    else:
         if amount > user["balance_manat"]:
             await message.answer(f"❌ Недостаточно средств. Ваш баланс: {user['balance_manat']:.2f}ТМТ")
             return
         amount_rub = amount / RATE_MANAT
         if db.deduct_balance(user_id, amount_rub):
-            withdrawal_id = db.create_withdrawal(user_id, amount, "manat", amount_rub)
-            await send_withdrawal_check(withdrawal_id, user_id, amount, "manat")
+            withdrawal_id = db.create_withdrawal(user_id, amount, "manat", amount_rub, details)
+            db.add_transaction(user_id, "withdraw", -amount, f"Вывод {amount:.2f}ТМТ")
+            await send_withdrawal_check(withdrawal_id, user_id, amount, "manat", details)
             await message.answer(
-                f"✅ Заявка на вывод {amount:.2f}ТМТ принята!\n\nОжидайте обработки в течение 24-48 часов.",
+                f"✅ Заявка на вывод {amount:.2f}ТМТ принята!\nТелефон: {details}\n\nОжидайте обработки в течение 1-12 часов.",
                 reply_markup=main_menu_keyboard()
             )
-        else:
-            await message.answer("❌ Ошибка при обработке заявки.")
-
+    
     await state.clear()
 
-
-@dp.callback_query(F.data.startswith("wd_paid_") | F.data.startswith("wd_reject_"))
-async def handle_withdrawal_action(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только администратор может это сделать!", show_alert=True)
-        return
-
-    is_paid = callback.data.startswith("wd_paid_")
-    withdrawal_id = int(callback.data.split("_")[2])
-
-    withdrawal = db.get_withdrawal(withdrawal_id)
-    if not withdrawal:
-        await callback.answer("❌ Заявка не найдена!", show_alert=True)
-        return
-
-    new_status = "paid" if is_paid else "rejected"
-    changed = db.set_withdrawal_status(withdrawal_id, new_status)
-
-    if not changed:
-        await callback.answer("⚠️ Эта заявка уже обработана!", show_alert=True)
-        return
-
-    withdrawal = db.get_withdrawal(withdrawal_id)
-    currency_label = "₽" if withdrawal["currency"] == "rub" else "ТМТ"
-    user_id = withdrawal["user_id"]
-    amount_display = withdrawal["amount_display"]
-
+async def send_withdrawal_check(withdrawal_id: int, user_id: int, amount_display: float, currency: str, details: str):
+    currency_label = "₽" if currency == "rub" else "ТМТ"
     try:
         user_chat = await bot.get_chat(user_id)
         username_part = f" (@{user_chat.username})" if user_chat.username else ""
     except Exception:
         username_part = ""
+    
+    raw_text = (
+        f'<emoji id="{EMOJI_TASK_MONEY}">💵</emoji> <b>Новая заявка на вывод</b>\n\n'
+        f'<quote>Заявка №{withdrawal_id}\n'
+        f'Пользователь: {user_id}{username_part}\n'
+        f'Сумма: {amount_display:.2f} {currency_label}\n'
+        f'Реквизиты: {details}</quote>\n\n'
+        f'Статус: ⏳ Ожидает обработки'
+    )
+    clean_text, entities = parse_premium_emoji(raw_text)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            create_button("Отклонить", DEFAULT_EMOJI_CHECK, "❌", style="danger",
+                          callback_data=f"wd_reject_{withdrawal_id}"),
+            create_button("Выплачено", DEFAULT_EMOJI_CHECK, "✅", style="success",
+                          callback_data=f"wd_paid_{withdrawal_id}")
+        ]
+    ])
+    
+    try:
+        sent = await bot.send_message(
+            PAYMENTS_CHANNEL, clean_text,
+            entities=entities if entities else None,
+            reply_markup=keyboard
+        )
+        db.set_withdrawal_channel_message(withdrawal_id, sent.message_id)
+    except Exception as e:
+        logger.error(f"Не удалось отправить чек на вывод в канал {PAYMENTS_CHANNEL}: {e}")
 
+# ======================== ОБРАБОТЧИКИ ВЫВОДОВ (АДМИН) ========================
+@dp.callback_query(F.data.startswith("wd_paid_") | F.data.startswith("wd_reject_"))
+async def handle_withdrawal_action(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Только администратор может это сделать!", show_alert=True)
+        return
+    
+    is_paid = callback.data.startswith("wd_paid_")
+    withdrawal_id = int(callback.data.split("_")[2])
+    
+    withdrawal = db.get_withdrawal(withdrawal_id)
+    if not withdrawal:
+        await callback.answer("❌ Заявка не найдена!", show_alert=True)
+        return
+    
+    new_status = "paid" if is_paid else "rejected"
+    changed = db.set_withdrawal_status(withdrawal_id, new_status)
+    
+    if not changed:
+        await callback.answer("⚠️ Эта заявка уже обработана!", show_alert=True)
+        return
+    
+    withdrawal = db.get_withdrawal(withdrawal_id)
+    currency_label = "₽" if withdrawal["currency"] == "rub" else "ТМТ"
+    user_id = withdrawal["user_id"]
+    amount_display = withdrawal["amount_display"]
+    details = withdrawal.get("details", "Не указаны")
+    
+    try:
+        user_chat = await bot.get_chat(user_id)
+        username_part = f" (@{user_chat.username})" if user_chat.username else ""
+    except Exception:
+        username_part = ""
+    
     if is_paid:
         status_line = "✅ Выплачено"
         user_notify_text = (
             f'<emoji id="{EMOJI_TASK_SUCCESS}">✅</emoji> <b>Ваша заявка на вывод выплачена!</b>\n\n'
             f'Сумма: {amount_display:.2f} {currency_label}\n'
+            f'Реквизиты: {details}\n'
             f'Спасибо, что пользуетесь ботом!'
         )
     else:
@@ -1721,16 +2293,17 @@ async def handle_withdrawal_action(callback: CallbackQuery):
             f'Сумма {amount_display:.2f} {currency_label} возвращена на ваш баланс.\n'
             f'Если это ошибка — свяжитесь с поддержкой.'
         )
-
+    
     updated_raw_text = (
         f'<emoji id="{EMOJI_TASK_MONEY}">💵</emoji> <b>Заявка на вывод №{withdrawal_id}</b>\n\n'
         f'<quote>Пользователь: {user_id}{username_part}\n'
-        f'Сумма: {amount_display:.2f} {currency_label}</quote>\n\n'
+        f'Сумма: {amount_display:.2f} {currency_label}\n'
+        f'Реквизиты: {details}</quote>\n\n'
         f'Статус: {status_line}\n'
         f'<emoji id="{EMOJI_ANON}">🕵️</emoji> Обработал: Аноним'
     )
     updated_clean, updated_entities = parse_premium_emoji(updated_raw_text)
-
+    
     try:
         await callback.message.edit_text(
             updated_clean,
@@ -1748,7 +2321,11 @@ async def handle_withdrawal_action(callback: CallbackQuery):
             )
         except Exception as e2:
             logger.error(f"Ошибка edit_text чека без custom_emoji: {e2}")
-
+            try:
+                await callback.message.edit_text(updated_clean, reply_markup=None)
+            except Exception as e3:
+                logger.error(f"Финальная попытка edit_text тоже упала: {e3}")
+    
     try:
         clean_notify, notify_entities = parse_premium_emoji(user_notify_text)
         try:
@@ -1762,9 +2339,8 @@ async def handle_withdrawal_action(callback: CallbackQuery):
                 await bot.send_message(user_id, clean_notify)
     except Exception:
         pass
-
+    
     await callback.answer("✅ Готово!" if is_paid else "❌ Заявка отклонена")
-
 
 # ======================== АДМИН-ПАНЕЛЬ ========================
 @dp.callback_query(F.data == "admin_panel")
@@ -1779,36 +2355,576 @@ async def admin_panel(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
     if not db.is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа!", show_alert=True)
         return
-
+    
     users = db.data.get("users", {})
     total_users = len(users)
     banned_users = sum(1 for u in users.values() if u.get("is_banned"))
     total_rub = sum(u.get("balance_rub", 0.0) for u in users.values())
     total_manat = sum(u.get("balance_manat", 0.0) for u in users.values())
     stats = db.data.get("statistics", {})
-
+    
+    threshold = datetime.now() - timedelta(days=7)
+    active_users = 0
+    for user in users.values():
+        last_activity = user.get("last_activity")
+        if last_activity:
+            try:
+                last_date = datetime.fromisoformat(last_activity)
+                if last_date > threshold:
+                    active_users += 1
+            except:
+                pass
+    
     text = (
         f"📊 <b>Статистика бота</b>\n\n"
         f"👥 Всего пользователей: <b>{total_users}</b>\n"
+        f"✅ Активных (7 дней): <b>{active_users}</b>\n"
         f"🚫 Заблокировано: <b>{banned_users}</b>\n"
         f"👥 Всего рефералов: <b>{stats.get('total_referrals', 0)}</b>\n\n"
         f"💰 Суммарный баланс пользователей:\n"
         f"• <b>{total_rub:.2f} ₽</b>\n"
         f"• <b>{total_manat:.2f} ТМТ</b>\n\n"
-        f"💳 Всего выплачено: <b>{stats.get('total_withdrawn', 0.0):.2f} ₽</b>"
+        f"💳 Всего выплачено: <b>{stats.get('total_withdrawn', 0.0):.2f} ₽</b>\n"
+        f"💰 Всего заработано: <b>{stats.get('total_earned', 0.0):.2f} ₽</b>"
     )
-
+    
     clean_text, entities = parse_premium_emoji(text)
     await safe_edit_or_send(callback.message, clean_text, back_keyboard("admin_panel"), entities)
     await callback.answer()
 
+@dp.callback_query(F.data == "admin_start_text")
+async def admin_start_text(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    current_text = db.get_start_text()
+    # Для отображения в админ-панели показываем исходный текст без парсинга
+    text = (
+        f"📝 <b>Текущий текст приветствия (/start):</b>\n\n"
+        f"<code>{current_text}</code>\n\n"
+        f"Доступные переменные:\n"
+        f"• <code>{{EMOJI_STAR}}</code>\n"
+        f"• <code>{{EMOJI_COINS}}</code>\n"
+        f"• <code>{{REFERRAL_REWARD_RUB}}</code>\n"
+        f"• <code>{{REFERRAL_REWARD_MANAT}}</code>\n\n"
+        f"Доступные теги:\n"
+        f"• <code>&lt;emoji id=\"ID\"&gt;текст&lt;/emoji&gt;</code> - премиум эмодзи\n"
+        f"• <code>&lt;pole&gt;текст&lt;/pole&gt;</code> - цитата\n"
+        f"• <code>&lt;zhirnyy&gt;текст&lt;/zhirnyy&gt;</code> - жирный внутри цитаты\n"
+        f"• <code>**текст**</code> или <code>&lt;b&gt;текст&lt;/b&gt;</code> - жирный\n"
+        f"• <code>&lt;i&gt;текст&lt;/i&gt;</code> - курсив\n"
+        f"• <code>&lt;code&gt;текст&lt;/code&gt;</code> - код\n\n"
+        f"<b>Введите новый текст (сохраняется как есть, без парсинга):</b>"
+    )
+    await state.set_state(AdminStates.waiting_for_start_text)
+    await safe_edit_or_send(callback.message, text, back_keyboard("admin_panel"))
+    await callback.answer()
 
+@dp.message(AdminStates.waiting_for_start_text)
+async def process_start_text(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    
+    new_text = message.text  # Сохраняем как есть, без парсинга
+    
+    # Проверяем только переменные форматирования
+    try:
+        new_text.format(
+            EMOJI_STAR="",
+            EMOJI_COINS="",
+            REFERRAL_REWARD_RUB=0,
+            REFERRAL_REWARD_MANAT=0
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка в переменных форматирования: {e}\nПопробуйте ещё раз.")
+        return
+    
+    db.set_start_text(new_text)  # Сохраняем исходный текст
+    await state.clear()
+    await message.answer("✅ Текст старта успешно обновлён!", reply_markup=back_keyboard("admin_panel"))
+
+# ======================== АДМИН-СПОНСОРЫ ========================
+@dp.callback_query(F.data == "admin_sponsors")
+async def admin_sponsors(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await safe_edit_or_send(
+        callback.message,
+        "📺 <b>Управление спонсорами и заданиями</b>\n\nНиже список текущих обязательных каналов:",
+        admin_sponsors_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_sponsor_del_"))
+async def admin_sponsor_del(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    idx = int(callback.data.replace("admin_sponsor_del_", ""))
+    db.remove_sponsor(idx)
+    await callback.answer("🗑 Спонсор удалён!", show_alert=True)
+    await safe_edit_or_send(
+        callback.message,
+        "📺 <b>Управление спонсорами и заданиями</b>\n\nНиже список текущих обязательных каналов:",
+        admin_sponsors_keyboard()
+    )
+
+@dp.callback_query(F.data == "admin_sponsor_add_channel")
+async def admin_sponsor_add_channel(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.update_data(sponsor_type="channel")
+    await state.set_state(AdminStates.waiting_for_sponsor_channel_id)
+    await safe_edit_or_send(
+        callback.message,
+        "📺 <b>Добавление канала</b>\n\nШаг 1/3: Введите ID канала (например: <code>-1001234567890</code>):",
+        back_keyboard("admin_sponsors")
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_sponsor_add_addlist")
+async def admin_sponsor_add_addlist(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.update_data(sponsor_type="addlist")
+    await state.set_state(AdminStates.waiting_for_sponsor_addlist_ids)
+    await safe_edit_or_send(
+        callback.message,
+        "📋 <b>Добавление Addlist</b>\n\nШаг 1/3: Введите ID каналов через запятую (например: <code>-1001234567890, -1009876543210</code>):",
+        back_keyboard("admin_sponsors")
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_sponsor_add_button")
+async def admin_sponsor_add_button(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.update_data(sponsor_type="button")
+    await state.set_state(AdminStates.waiting_for_sponsor_name)
+    await safe_edit_or_send(
+        callback.message,
+        "🔘 <b>Добавление кнопки</b>\n\nШаг 1/2: Введите название кнопки:",
+        back_keyboard("admin_sponsors")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_sponsor_channel_id)
+async def process_sponsor_channel_id(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    await state.update_data(sponsor_channel_id=message.text.strip())
+    await state.set_state(AdminStates.waiting_for_sponsor_name)
+    await message.answer("Шаг 2/3: Введите название кнопки:")
+
+@dp.message(AdminStates.waiting_for_sponsor_addlist_ids)
+async def process_sponsor_addlist_ids(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    ids = [cid.strip() for cid in message.text.replace(',', ' ').split() if cid.strip()]
+    if not ids:
+        await message.answer("❌ Введите хотя бы один ID!")
+        return
+    await state.update_data(sponsor_addlist_ids=ids)
+    await state.set_state(AdminStates.waiting_for_sponsor_name)
+    await message.answer(f"Шаг 2/3: Введите название кнопки (для {len(ids)} каналов):")
+
+@dp.message(AdminStates.waiting_for_sponsor_name)
+async def process_sponsor_name(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    await state.update_data(sponsor_name=message.text.strip())
+    await state.set_state(AdminStates.waiting_for_sponsor_link)
+    await message.answer("Шаг 3/3: Введите ссылку (например: <code>https://t.me/mychannel</code>):")
+
+@dp.message(AdminStates.waiting_for_sponsor_link)
+async def process_sponsor_link(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    
+    data = await state.get_data()
+    sponsor_type = data.get("sponsor_type", "channel")
+    link = message.text.strip()
+    
+    if sponsor_type == "channel":
+        channel_id = data.get("sponsor_channel_id", "")
+        button_text = data["sponsor_name"]
+        db.add_sponsor(button_text, link, channel_id, len(db.get_sponsors()), "channel")
+        await message.answer("✅ Канал успешно добавлен!")
+    elif sponsor_type == "addlist":
+        ids = data.get("sponsor_addlist_ids", [])
+        button_text = data["sponsor_name"]
+        db.add_sponsor(button_text, link, None, len(db.get_sponsors()), "addlist", ids)
+        await message.answer(f"✅ Addlist успешно добавлен! ({len(ids)} каналов)")
+    else:
+        button_text = data["sponsor_name"]
+        db.add_sponsor(button_text, link, None, len(db.get_sponsors()), "button")
+        await message.answer("✅ Кнопка успешно добавлена!")
+    
+    await state.clear()
+
+# ======================== АДМИН-КНОПКИ ========================
+@dp.callback_query(F.data == "admin_button_texts")
+async def admin_button_texts(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    await safe_edit_or_send(
+        callback.message,
+        "🧩 <b>Настройка названий кнопок меню</b>\nВыберите кнопку для изменения:",
+        admin_button_texts_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_btn_"))
+async def admin_btn_text_edit(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    btn_key = callback.data.replace("admin_btn_", "")
+    await state.update_data(target_btn_key=btn_key)
+    await state.set_state(AdminStates.waiting_for_button_text)
+    
+    current = db.get_button_text(btn_key)
+    await safe_edit_or_send(
+        callback.message,
+        f"📝 Введите новое название для кнопки <code>{btn_key}</code> (текущее: <code>{current}</code>):",
+        back_keyboard("admin_button_texts")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_button_text)
+async def process_button_text(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    btn_key = data.get("target_btn_key")
+    if btn_key:
+        db.set_button_text(btn_key, message.text.strip())
+        await message.answer(f"✅ Название кнопки <code>{btn_key}</code> обновлено!", reply_markup=back_keyboard("admin_button_texts"))
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_button_emojis")
+async def admin_button_emojis(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    await safe_edit_or_send(
+        callback.message,
+        "🎨 <b>Настройка Премиум-эмодзи для кнопок</b>\nВыберите кнопку для смены custom_emoji_id:",
+        admin_button_emojis_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_emoji_"))
+async def admin_emoji_edit(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    btn_key = callback.data.replace("admin_emoji_", "")
+    await state.update_data(target_emoji_key=btn_key)
+    await state.set_state(AdminStates.waiting_for_button_emoji)
+    
+    current = db.get_button_emoji(btn_key)
+    await safe_edit_or_send(
+        callback.message,
+        f"🎨 Введите ID Премиум-эмодзи (custom_emoji_id) для кнопки <code>{btn_key}</code>\n(текущий ID: <code>{current}</code>):",
+        back_keyboard("admin_button_emojis")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_button_emoji)
+async def process_button_emoji(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    btn_key = data.get("target_emoji_key")
+    emoji_id = message.text.strip()
+    if btn_key:
+        db.set_button_emoji(btn_key, emoji_id)
+        await message.answer(f"✅ Эмодзи кнопки <code>{btn_key}</code> обновлено!", reply_markup=back_keyboard("admin_button_emojis"))
+    await state.clear()
+
+# ======================== АДМИН-БАННЕР ========================
+@dp.callback_query(F.data == "admin_banner")
+async def admin_banner(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    banner_path = db.get_banner()
+    has_banner = "Да" if banner_path and os.path.exists(banner_path) else "Нет"
+    
+    await safe_edit_or_send(
+        callback.message,
+        f"🖼 <b>Управление баннером меню</b>\n\nТекущий баннер: <b>{has_banner}</b>",
+        admin_banner_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "banner_upload")
+async def banner_upload(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_for_banner)
+    await safe_edit_or_send(
+        callback.message,
+        "📤 Отправьте изображение (фото) для установки в качестве баннера меню:",
+        back_keyboard("admin_banner")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_banner, F.photo)
+async def process_banner_photo(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    
+    photo = message.photo[-1]
+    file_path = "banner.jpg"
+    await bot.download(photo, destination=file_path)
+    db.set_banner(file_path)
+    
+    await state.clear()
+    await message.answer("✅ Баннер успешно сохранён!", reply_markup=back_keyboard("admin_banner"))
+
+@dp.callback_query(F.data == "banner_delete")
+async def banner_delete(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    db.remove_banner()
+    await callback.answer("🗑 Баннер удалён!", show_alert=True)
+    await safe_edit_or_send(
+        callback.message,
+        "🖼 <b>Управление баннером меню</b>\n\nТекущий баннер: <b>Нет</b>",
+        admin_banner_keyboard()
+    )
+
+# ======================== АДМИН-РЕФЕРАЛЫ ========================
+@dp.callback_query(F.data == "admin_referral_reward")
+async def admin_referral_reward(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    rub = db.get_referral_reward_rub()
+    manat = db.get_referral_reward_manat()
+    
+    text = (
+        f"🎁 <b>Настройка награды за реферала</b>\n\n"
+        f"Текущая награда за приглашённого пользователя:\n"
+        f"• <b>{rub:.2f} ₽</b>\n"
+        f"• <b>{manat:.2f} ТМТ</b>"
+    )
+    
+    await safe_edit_or_send(callback.message, text, admin_referral_reward_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_reward_rub")
+async def admin_reward_rub(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_for_reward_rub)
+    await safe_edit_or_send(
+        callback.message,
+        "🎁 Введите новое значение награды за реферала в <b>рублях (₽)</b>:",
+        back_keyboard("admin_referral_reward")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_reward_rub)
+async def process_reward_rub(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        val = float(message.text.replace(",", "."))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное положительное число!")
+        return
+    
+    db.set_referral_reward_rub(val)
+    await state.clear()
+    await message.answer("✅ Награда за реферала обновлена!", reply_markup=back_keyboard("admin_referral_reward"))
+
+@dp.callback_query(F.data == "admin_reward_manat")
+async def admin_reward_manat(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_for_reward_manat)
+    await safe_edit_or_send(
+        callback.message,
+        "🎁 Введите новое значение награды за реферала в <b>манатах (ТМТ)</b>:",
+        back_keyboard("admin_referral_reward")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_reward_manat)
+async def process_reward_manat(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    try:
+        val = float(message.text.replace(",", "."))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное положительное число!")
+        return
+    
+    db.set_referral_reward_manat(val)
+    await state.clear()
+    await message.answer("✅ Награда за реферала обновлена!", reply_markup=back_keyboard("admin_referral_reward"))
+
+# ======================== АДМИН-ПРОМОКОДЫ ========================
+@dp.callback_query(F.data == "admin_promocode")
+async def admin_promocode(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    await state.set_state(AdminStates.waiting_for_promocode)
+    await safe_edit_or_send(
+        callback.message,
+        "🎫 <b>Создание промокода</b>\n\nВведите данные в формате:\n<code>КОД|СУММА|КОЛ-ВО_АКТИВАЦИЙ</code>\n\nПример: <code>BONUS50|5|100</code>",
+        back_keyboard("admin_panel")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_promocode)
+async def process_promocode(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    
+    try:
+        code, reward, uses = message.text.split("|")
+        reward = float(reward)
+        uses = int(uses)
+        db.create_promocode(code.strip(), reward, uses)
+        await message.answer(f"✅ Промокод <code>{code}</code> создан!\nНаграда: {reward}₽\nАктиваций: {uses}")
+    except Exception as e:
+        await message.answer(f"❌ Неверный формат! Используйте: КОД|СУММА|КОЛ-ВО\nОшибка: {e}")
+    
+    await state.clear()
+
+# ======================== АДМИН-ЭКСПОРТ ========================
+@dp.callback_query(F.data == "admin_export_csv")
+async def admin_export_csv(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    csv_data = db.export_stats_csv()
+    await callback.message.answer_document(
+        BufferedInputFile(csv_data.encode('utf-8'), filename="statistics.csv"),
+        caption="📊 Экспорт статистики пользователей"
+    )
+    await callback.answer()
+
+# ======================== АДМИН-БАН ========================
+@dp.callback_query(F.data == "admin_ban")
+async def admin_ban(callback: CallbackQuery, state: FSMContext):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_for_ban_user)
+    await safe_edit_or_send(
+        callback.message,
+        "🚫 <b>Бан / Разбан пользователя</b>\n\nВведите Telegram ID пользователя:",
+        back_keyboard("admin_panel")
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_ban_user)
+async def process_admin_ban_user(message: Message, state: FSMContext):
+    if not db.is_admin(message.from_user.id):
+        return
+    
+    try:
+        target_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Введите корректный числовой ID!")
+        return
+    
+    user = db.get_user(target_id)
+    is_banned = not user.get("is_banned", False)
+    user["is_banned"] = is_banned
+    db.save()
+    
+    status_str = "заблокирован" if is_banned else "разблокирован"
+    await state.clear()
+    await message.answer(f"✅ Пользователь `{target_id}` успешно {status_str}!", reply_markup=back_keyboard("admin_panel"))
+
+# ======================== АДМИН-СТАТУС ========================
+@dp.callback_query(F.data == "admin_status")
+async def admin_status(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    current_status = db.is_bot_stopped()
+    new_status = not current_status
+    db.set_bot_stopped(new_status)
+    
+    status_str = "⏸ Остановлен" if new_status else "⚡ Активен"
+    await callback.answer(f"Статус бота изменён: {status_str}", show_alert=True)
+    await safe_edit_or_send(
+        callback.message,
+        f"🛠 <b>Управление статусом бота</b>\n\nТекущее состояние: <b>{status_str}</b>",
+        admin_panel_keyboard()
+    )
+
+# ======================== АДМИН-PIARFLOW ========================
+@dp.callback_query(F.data == "admin_piarflow_debug")
+async def admin_piarflow_debug(callback: CallbackQuery):
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа!", show_alert=True)
+        return
+    
+    user_id = callback.from_user.id
+    piar_sponsors = await fetch_piar_sponsors(user_id, callback.message.chat.id)
+    
+    debug_info = (
+        f"🔍 <b>PiarFlow Debug</b>\n\n"
+        f"API URL: {PIARFLOW_API_URL}\n"
+        f"API Key: {'✅ Установлен' if PIARFLOW_API_KEY and PIARFLOW_API_KEY != 'BURAYA_API_KEY_YAZ' else '❌ Не установлен'}\n"
+        f"Max sponsors: {PIARFLOW_MAX_SPONSORS}\n\n"
+        f"Получено спонсоров: <b>{len(piar_sponsors)}</b>\n"
+    )
+    
+    if piar_sponsors:
+        debug_info += "\nСписок спонсоров:\n"
+        for i, s in enumerate(piar_sponsors[:5], 1):
+            debug_info += f"{i}. {s.get('button_text', 'Без названия')}\n"
+    
+    clean_text, entities = parse_premium_emoji(debug_info)
+    await safe_edit_or_send(callback.message, clean_text, back_keyboard("admin_panel"), entities)
+    await callback.answer()
+
+# ======================== АДМИН-ПОЛЬЗОВАТЕЛИ ========================
 @dp.callback_query(F.data == "admin_users")
 async def admin_users(callback: CallbackQuery):
     if not db.is_admin(callback.from_user.id):
@@ -1820,7 +2936,6 @@ async def admin_users(callback: CallbackQuery):
         admin_users_keyboard(page=0)
     )
     await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("admin_users_page_"))
 async def admin_users_page(callback: CallbackQuery):
@@ -1839,7 +2954,6 @@ async def admin_users_page(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 async def show_user_card(message: Message, user: Dict):
     status = "🚫 Забанен" if user.get("is_banned") else "✅ Активен"
     text = (
@@ -1853,15 +2967,14 @@ async def show_user_card(message: Message, user: Dict):
     clean_text, entities = parse_premium_emoji(text)
     await safe_edit_or_send(message, clean_text, user_actions_keyboard(user["id"]), entities)
 
-
 @dp.callback_query(F.data.startswith("admin_user_") & ~F.data.startswith("admin_users_"))
 async def admin_user_info(callback: CallbackQuery, state: FSMContext):
     if not db.is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа!", show_alert=True)
         return
-
+    
     data = callback.data
-
+    
     if data.startswith("admin_user_add_balance_"):
         target_id = int(data.replace("admin_user_add_balance_", ""))
         await state.update_data(target_user_id=target_id, action="add_balance")
@@ -1873,7 +2986,7 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         )
         await callback.answer()
         return
-
+    
     if data.startswith("admin_user_sub_balance_"):
         target_id = int(data.replace("admin_user_sub_balance_", ""))
         await state.update_data(target_user_id=target_id, action="sub_balance")
@@ -1885,7 +2998,7 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         )
         await callback.answer()
         return
-
+    
     if data.startswith("admin_user_add_ref_"):
         target_id = int(data.replace("admin_user_add_ref_", ""))
         await state.update_data(target_user_id=target_id)
@@ -1897,7 +3010,7 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         )
         await callback.answer()
         return
-
+    
     if data.startswith("admin_user_reset_ref_"):
         target_id = int(data.replace("admin_user_reset_ref_", ""))
         db.admin_reset_referrals(target_id)
@@ -1905,7 +3018,7 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         user = db.get_user(target_id)
         await show_user_card(callback.message, user)
         return
-
+    
     if data.startswith("admin_user_ban_"):
         target_id = int(data.replace("admin_user_ban_", ""))
         user = db.get_user(target_id)
@@ -1914,7 +3027,7 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         await callback.answer("🚫 Пользователь забанен!", show_alert=True)
         await show_user_card(callback.message, user)
         return
-
+    
     if data.startswith("admin_user_unban_"):
         target_id = int(data.replace("admin_user_unban_", ""))
         user = db.get_user(target_id)
@@ -1923,12 +3036,11 @@ async def admin_user_info(callback: CallbackQuery, state: FSMContext):
         await callback.answer("🔓 Пользователь разбанен!", show_alert=True)
         await show_user_card(callback.message, user)
         return
-
+    
     target_id = int(data.replace("admin_user_", ""))
     user = db.get_user(target_id)
     await show_user_card(callback.message, user)
     await callback.answer()
-
 
 @dp.message(AdminStates.waiting_for_balance_amount)
 async def process_admin_balance(message: Message, state: FSMContext):
@@ -1939,11 +3051,11 @@ async def process_admin_balance(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите число!")
         return
-
+    
     data = await state.get_data()
     target_id = data.get("target_user_id")
     action = data.get("action")
-
+    
     if target_id:
         if action == "add_balance":
             db.add_balance(target_id, amount, amount * RATE_MANAT)
@@ -1951,9 +3063,8 @@ async def process_admin_balance(message: Message, state: FSMContext):
         elif action == "sub_balance":
             db.deduct_balance(target_id, amount)
             await message.answer(f"✅ Списано {amount:.2f} ₽ у пользователя ID `{target_id}`")
-
+    
     await state.clear()
-
 
 @dp.message(AdminStates.waiting_for_referral_count)
 async def process_admin_referrals(message: Message, state: FSMContext):
@@ -1964,391 +3075,23 @@ async def process_admin_referrals(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введите целое число!")
         return
-
+    
     data = await state.get_data()
     target_id = data.get("target_user_id")
-
+    
     if target_id:
         db.admin_add_referrals(target_id, count)
         await message.answer(f"✅ Пользователю ID `{target_id}` добавлено {count} рефералов")
-
+    
     await state.clear()
 
-
-@dp.callback_query(F.data == "admin_start_text")
-async def admin_start_text(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    current_text = db.get_start_text()
-    text = (
-        f"📝 <b>Текущий текст приветствия (/start):</b>\n\n"
-        f"<code>{current_text}</code>\n\n"
-        f"Доступные переменные:\n"
-        f"• <code>{{EMOJI_STAR}}</code>\n"
-        f"• <code>{{EMOJI_COINS}}</code>\n"
-        f"• <code>{{REFERRAL_REWARD_RUB}}</code>\n"
-        f"• <code>{{REFERRAL_REWARD_MANAT}}</code>\n\n"
-        f"Поддерживается форматирование тегами (<b>bold</b>, <i>italic</i>, <code>code</code>, <quote>quote</quote>, **bold**, ##quote##).\n\n"
-        f"Введите новый текст:"
-    )
-    clean_text, entities = parse_premium_emoji(text)
-    await state.set_state(AdminStates.waiting_for_start_text)
-    await safe_edit_or_send(callback.message, clean_text, back_keyboard("admin_panel"), entities)
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_start_text)
-async def process_start_text(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-
-    new_text = message.text
-    try:
-        new_text.format(
-            EMOJI_STAR="",
-            EMOJI_COINS="",
-            REFERRAL_REWARD_RUB=0,
-            REFERRAL_REWARD_MANAT=0
-        )
-    except Exception as e:
-        await message.answer(f"❌ Ошибка в переменных форматирования: {e}\nПопробуйте ещё раз.")
-        return
-
-    db.set_start_text(new_text)
-    await state.clear()
-    await message.answer("✅ Текст старта успешно обновлён!", reply_markup=back_keyboard("admin_panel"))
-
-
-@dp.callback_query(F.data == "admin_sponsors")
-async def admin_sponsors(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await safe_edit_or_send(
-        callback.message,
-        "📺 <b>Управление спонсорами и заданиями</b>\n\nНиже список текущих обязательных каналов:",
-        admin_sponsors_keyboard()
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("admin_sponsor_del_"))
-async def admin_sponsor_del(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    idx = int(callback.data.replace("admin_sponsor_del_", ""))
-    db.remove_sponsor(idx)
-    await callback.answer("🗑 Спонсор удалён!", show_alert=True)
-    await safe_edit_or_send(
-        callback.message,
-        "📺 <b>Управление спонсорами и заданиями</b>\n\nНиже список текущих обязательных каналов:",
-        admin_sponsors_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "admin_sponsor_add")
-async def admin_sponsor_add(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await state.set_state(AdminStates.waiting_for_sponsor_name)
-    await safe_edit_or_send(
-        callback.message,
-        "➕ <b>Добавление спонсора</b>\n\nШаг 1/3: Введите название кнопки (например: <code>Подписаться на Канал</code>):",
-        back_keyboard("admin_sponsors")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_sponsor_name)
-async def process_sponsor_name(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    await state.update_data(sponsor_name=message.text)
-    await state.set_state(AdminStates.waiting_for_sponsor_link)
-    await message.answer("Шаг 2/3: Введите ссылку на канал/ресурс (например: <code>https://t.me/mychannel</code>):")
-
-
-@dp.message(AdminStates.waiting_for_sponsor_link)
-async def process_sponsor_link(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    await state.update_data(sponsor_link=message.text)
-    await state.set_state(AdminStates.waiting_for_sponsor_channel)
-    await message.answer(
-        "Шаг 3/3: Введите username канала с @ для автоматической проверки подписки (например <code>@mychannel</code>), "
-        "или отправьте <code>-</code> если автоматическая проверка не требуется:"
-    )
-
-
-@dp.message(AdminStates.waiting_for_sponsor_channel)
-async def process_sponsor_channel(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-
-    data = await state.get_data()
-    channel = message.text.strip()
-    if channel == "-":
-        channel = None
-    elif channel.startswith("@"):
-        channel = channel[1:]
-
-    db.add_sponsor(
-        button_text=data["sponsor_name"],
-        link=data["sponsor_link"],
-        channel_username=channel
-    )
-
-    await state.clear()
-    await message.answer("✅ Спонсор успешно добавлен!", reply_markup=back_keyboard("admin_sponsors"))
-
-
-@dp.callback_query(F.data == "admin_button_texts")
-async def admin_button_texts(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-    await safe_edit_or_send(
-        callback.message,
-        "🧩 <b>Настройка названий кнопок меню</b>\nВыберите кнопку для изменения:",
-        admin_button_texts_keyboard()
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("admin_btn_"))
-async def admin_btn_text_edit(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    btn_key = callback.data.replace("admin_btn_", "")
-    await state.update_data(target_btn_key=btn_key)
-    await state.set_state(AdminStates.waiting_for_button_text)
-
-    current = db.get_button_text(btn_key)
-    await safe_edit_or_send(
-        callback.message,
-        f"📝 Введите новое название для кнопки <code>{btn_key}</code> (текущее: <code>{current}</code>):",
-        back_keyboard("admin_button_texts")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_button_text)
-async def process_button_text(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    btn_key = data.get("target_btn_key")
-    if btn_key:
-        db.set_button_text(btn_key, message.text.strip())
-        await message.answer(f"✅ Название кнопки <code>{btn_key}</code> обновлено!", reply_markup=back_keyboard("admin_button_texts"))
-    await state.clear()
-
-
-@dp.callback_query(F.data == "admin_button_emojis")
-async def admin_button_emojis(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-    await safe_edit_or_send(
-        callback.message,
-        "🎨 <b>Настройка Премиум-эмодзи для кнопок</b>\nВыберите кнопку для смены custom_emoji_id:",
-        admin_button_emojis_keyboard()
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("admin_emoji_"))
-async def admin_emoji_edit(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    btn_key = callback.data.replace("admin_emoji_", "")
-    await state.update_data(target_emoji_key=btn_key)
-    await state.set_state(AdminStates.waiting_for_button_emoji)
-
-    current = db.get_button_emoji(btn_key)
-    await safe_edit_or_send(
-        callback.message,
-        f"🎨 Введите ID Премиум-эмодзи (custom_emoji_id) для кнопки <code>{btn_key}</code>\n(текущий ID: <code>{current}</code>):",
-        back_keyboard("admin_button_emojis")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_button_emoji)
-async def process_button_emoji(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    data = await state.get_data()
-    btn_key = data.get("target_emoji_key")
-    emoji_id = message.text.strip()
-    if btn_key:
-        db.set_button_emoji(btn_key, emoji_id)
-        await message.answer(f"✅ Эмодзи кнопки <code>{btn_key}</code> обновлено!", reply_markup=back_keyboard("admin_button_emojis"))
-    await state.clear()
-
-
-@dp.callback_query(F.data == "admin_banner")
-async def admin_banner(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    banner_path = db.get_banner()
-    has_banner = "Да" if banner_path and os.path.exists(banner_path) else "Нет"
-
-    await safe_edit_or_send(
-        callback.message,
-        f"🖼 <b>Управление баннером меню</b>\n\nТекущий баннер: <b>{has_banner}</b>",
-        admin_banner_keyboard()
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "banner_upload")
-async def banner_upload(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await state.set_state(AdminStates.waiting_for_banner)
-    await safe_edit_or_send(
-        callback.message,
-        "📤 Отправьте изображение (фото) для установки в качестве баннера меню:",
-        back_keyboard("admin_banner")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_banner, F.photo)
-async def process_banner_photo(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-
-    photo = message.photo[-1]
-    file_path = "banner.jpg"
-    await bot.download(photo, destination=file_path)
-    db.set_banner(file_path)
-
-    await state.clear()
-    await message.answer("✅ Баннер успешно сохранён!", reply_markup=back_keyboard("admin_banner"))
-
-
-@dp.callback_query(F.data == "banner_delete")
-async def banner_delete(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    db.remove_banner()
-    await callback.answer("🗑 Баннер удалён!", show_alert=True)
-    await safe_edit_or_send(
-        callback.message,
-        "🖼 <b>Управление баннером меню</b>\n\nТекущий баннер: <b>Нет</b>",
-        admin_banner_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "admin_referral_reward")
-async def admin_referral_reward(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    rub = db.get_referral_reward_rub()
-    manat = db.get_referral_reward_manat()
-
-    text = (
-        f"🎁 <b>Настройка награды за реферала</b>\n\n"
-        f"Текущая награда за приглашённого пользователя:\n"
-        f"• <b>{rub:.2f} ₽</b>\n"
-        f"• <b>{manat:.2f} ТМТ</b>"
-    )
-
-    await safe_edit_or_send(callback.message, text, admin_referral_reward_keyboard())
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "admin_reward_rub")
-async def admin_reward_rub(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await state.set_state(AdminStates.waiting_for_reward_rub)
-    await safe_edit_or_send(
-        callback.message,
-        "🎁 Введите новое значение награды за реферала в <b>рублях (₽)</b>:",
-        back_keyboard("admin_referral_reward")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_reward_rub)
-async def process_reward_rub(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    try:
-        val = float(message.text.replace(",", "."))
-        if val < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Введите корректное положительное число!")
-        return
-
-    db.set_referral_reward_rub(val)
-    await state.clear()
-    await message.answer("✅ Награда за реферала обновлена!", reply_markup=back_keyboard("admin_referral_reward"))
-
-
-@dp.callback_query(F.data == "admin_reward_manat")
-async def admin_reward_manat(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await state.set_state(AdminStates.waiting_for_reward_manat)
-    await safe_edit_or_send(
-        callback.message,
-        "🎁 Введите новое значение награды за реферала в <b>манатах (ТМТ)</b>:",
-        back_keyboard("admin_referral_reward")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_reward_manat)
-async def process_reward_manat(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    try:
-        val = float(message.text.replace(",", "."))
-        if val < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Введите корректное положительное число!")
-        return
-
-    db.set_referral_reward_manat(val)
-    await state.clear()
-    await message.answer("✅ Награда за реферала обновлена!", reply_markup=back_keyboard("admin_referral_reward"))
-
-
+# ======================== АДМИН-РАССЫЛКА ========================
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast(callback: CallbackQuery, state: FSMContext):
     if not db.is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа!", show_alert=True)
         return
-
+    
     await state.set_state(AdminStates.waiting_for_broadcast_text)
     await safe_edit_or_send(
         callback.message,
@@ -2357,21 +3100,20 @@ async def admin_broadcast(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-
 @dp.message(AdminStates.waiting_for_broadcast_text)
 async def process_broadcast_text(message: Message, state: FSMContext):
     if not db.is_admin(message.from_user.id):
         return
-
+    
     text = message.text
     clean_text, entities = parse_premium_emoji(text)
     users = list(db.data["users"].keys())
-
+    
     await message.answer(f"⏳ Запуск рассылки на {len(users)} пользователей...")
-
+    
     success = 0
     failed = 0
-
+    
     for uid in users:
         try:
             await bot.send_message(
@@ -2383,95 +3125,18 @@ async def process_broadcast_text(message: Message, state: FSMContext):
         except Exception:
             failed += 1
         await asyncio.sleep(0.05)
-
+    
     await state.clear()
     await message.answer(
         f"✅ <b>Рассылка завершена!</b>\n\n• Успешно: <b>{success}</b>\n• Ошибок: <b>{failed}</b>",
         reply_markup=back_keyboard("admin_panel")
     )
 
-
-@dp.callback_query(F.data == "admin_ban")
-async def admin_ban(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    await state.set_state(AdminStates.waiting_for_ban_user)
-    await safe_edit_or_send(
-        callback.message,
-        "🚫 <b>Бан / Разбан пользователя</b>\n\nВведите Telegram ID пользователя:",
-        back_keyboard("admin_panel")
-    )
-    await callback.answer()
-
-
-@dp.message(AdminStates.waiting_for_ban_user)
-async def process_admin_ban_user(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-
-    try:
-        target_id = int(message.text.strip())
-    except ValueError:
-        await message.answer("❌ Введите корректный числовой ID!")
-        return
-
-    user = db.get_user(target_id)
-    is_banned = not user.get("is_banned", False)
-    user["is_banned"] = is_banned
-    db.save()
-
-    status_str = "заблокирован" if is_banned else "разблокирован"
-    await state.clear()
-    await message.answer(f"✅ Пользователь `{target_id}` успешно {status_str}!", reply_markup=back_keyboard("admin_panel"))
-
-
-@dp.callback_query(F.data == "admin_status")
-async def admin_status(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    current_status = db.is_bot_stopped()
-    new_status = not current_status
-    db.set_bot_stopped(new_status)
-
-    status_str = "⏸ Остановлен" if new_status else "⚡ Активен"
-    await callback.answer(f"Статус бота изменён: {status_str}", show_alert=True)
-    await safe_edit_or_send(
-        callback.message,
-        f"🛠 <b>Управление статусом бота</b>\n\nТекущее состояние: <b>{status_str}</b>",
-        admin_panel_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "admin_tgras_debug")
-async def admin_tgras_debug(callback: CallbackQuery):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-
-    user_id = callback.from_user.id
-    status_code, data = await fetch_tgrass_offers(user_id)
-
-    debug_info = (
-        f"🔍 <b>TGRAS API Debug</b>\n\n"
-        f"Status Code: <code>{status_code}</code>\n"
-        f"Response:\n<code>{json.dumps(data, ensure_ascii=False, indent=2)[:3000]}</code>"
-    )
-
-    clean_text, entities = parse_premium_emoji(debug_info)
-    await safe_edit_or_send(callback.message, clean_text, back_keyboard("admin_panel"), entities)
-    await callback.answer()
-
-
 # ======================== ЗАПУСК БОТА ========================
 async def main():
     logger.info("Запуск бота...")
-    await start_keep_alive_server()
+    asyncio.create_task(check_inactive_users())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
