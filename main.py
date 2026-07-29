@@ -3134,39 +3134,51 @@ async def process_broadcast_text(message: Message, state: FSMContext):
 
 # ======================== ЗАПУСК БОТА ========================
 async def main():
-    logger.info("Запуск бота...")
+    logger.info("🚀 Запуск бота...")
     
-    # 1. Запускаем веб-сервер для UptimeRobot и Render
-    try:
-        app = web.Application()
-        
-        # Простой хэндлер для проверки работоспособности
-        async def handle_ping(request):
-            return web.Response(text="OK", status=200)
-        
-        # Добавляем несколько эндпоинтов для надёжности
-        app.router.add_get("/", handle_ping)
-        app.router.add_get("/ping", handle_ping)
-        app.router.add_get("/health", handle_ping)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        # Render передает номер порта в переменную окружения PORT
-        # Если PORT не задан, используем 10000 (стандартный для Render)
-        port = int(os.environ.get("PORT", 10000))
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        logger.info(f"🌐 Веб-сервер запущен на порту {port}")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска веб-сервера: {e}")
-        # Продолжаем работу даже если веб-сервер не запустился
+    # Запускаем веб-сервер как отдельную задачу
+    async def run_web_server():
+        try:
+            from aiohttp import web
+            
+            app = web.Application()
+            
+            async def handle_ping(request):
+                return web.Response(text="OK", status=200)
+            
+            app.router.add_get("/", handle_ping)
+            app.router.add_get("/ping", handle_ping)
+            app.router.add_get("/health", handle_ping)
+            
+            runner = web.AppRunner(app)
+            await runner.setup()
+            
+            port = int(os.environ.get("PORT", 10000))
+            site = web.TCPSite(runner, "0.0.0.0", port)
+            await site.start()
+            
+            logger.info(f"✅ Веб-сервер запущен на порту {port}")
+            logger.info(f"✅ Проверьте: http://0.0.0.0:{port}/ping")
+            
+            # Держим веб-сервер активным - это критически важно!
+            # Без этого веб-сервер не будет обрабатывать запросы
+            await asyncio.Event().wait()  # Бесконечное ожидание
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка веб-сервера: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
-    # 2. Запускаем фоновая задача проверки неактивных пользователей
+    # Запускаем веб-сервер в фоне
+    web_task = asyncio.create_task(run_web_server())
+    
+    # Даём время веб-серверу запуститься
+    await asyncio.sleep(1)
+    
+    # Запускаем фоновую задачу
     asyncio.create_task(check_inactive_users())
     
-    # 3. Запускаем polling бота
+    # Запускаем бота
     logger.info("🤖 Бот запущен и готов к работе!")
     await dp.start_polling(bot)
 
