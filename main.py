@@ -59,6 +59,9 @@ DEFAULT_EMOJI_STAR = "5393512611968995988"
 DEFAULT_EMOJI_ROCKET = "5397916757333654638"
 DEFAULT_EMOJI_FIRE = "5397916757333654637"
 
+# НОВЫЙ ЭМОДЗИ ДЛЯ КНОПКИ "НАЗАД"
+EMOJI_BACK = "5413444438498223062"
+
 EMOJI_TASK_HOURGLASS = DEFAULT_EMOJI_CHECK    
 EMOJI_TASK_DONE_ALL = DEFAULT_EMOJI_CHECK     
 EMOJI_TASK_LIST = DEFAULT_EMOJI_ROCKET        
@@ -373,6 +376,15 @@ def process_regular_text(text: str) -> Tuple[str, List[MessageEntity]]:
     
     temp = text
     
+    # ДОБАВЛЯЕМ ОБРАБОТКУ <zhirnyy> ДЛЯ ОБЫЧНОГО ТЕКСТА
+    zhirnyy_markers = []
+    
+    def replace_zhirnyy(match):
+        zhirnyy_markers.append(match.group(1))
+        return f"__Z_{len(zhirnyy_markers)-1}__"
+    
+    temp = re.sub(r'<zhirnyy>(.*?)</zhirnyy>', replace_zhirnyy, temp, flags=re.DOTALL)
+    
     # 1. <emoji id="...">текст</emoji>
     emoji_markers = []
     
@@ -422,6 +434,20 @@ def process_regular_text(text: str) -> Tuple[str, List[MessageEntity]]:
     i = 0
     while i < len(temp):
         marker_found = False
+        
+        # ДОБАВЛЯЕМ ОБРАБОТКУ __Z_ ДЛЯ ОБЫЧНОГО ТЕКСТА
+        if temp[i:].startswith("__Z_"):
+            end_idx = temp.find("__", i + 4)
+            if end_idx != -1:
+                try:
+                    idx = int(temp[i+4:end_idx])
+                    if idx < len(zhirnyy_markers):
+                        add_entity(zhirnyy_markers[idx], 'bold')
+                except (ValueError, IndexError):
+                    pass
+                i = end_idx + 2
+                marker_found = True
+                continue
         
         if temp[i:].startswith("__E_"):
             end_idx = temp.find("__", i + 4)
@@ -491,7 +517,7 @@ def process_regular_text(text: str) -> Tuple[str, List[MessageEntity]]:
         
         if not marker_found:
             next_marker = len(temp)
-            for marker in ["__E_", "__B_", "__BB_", "__I_", "__C_"]:
+            for marker in ["__Z_", "__E_", "__B_", "__BB_", "__I_", "__C_"]:
                 pos_marker = temp.find(marker, i)
                 if pos_marker != -1 and pos_marker < next_marker:
                     next_marker = pos_marker
@@ -1213,7 +1239,7 @@ def earn_keyboard(has_offer: bool) -> InlineKeyboardMarkup:
         ])
     rows.append([
         create_button("Рефералы", db.get_button_emoji("referrals"), style="primary", callback_data="menu_referrals"),
-        create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main"),
+        create_button("Назад", EMOJI_BACK, callback_data="menu_main"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1230,26 +1256,26 @@ def referral_keyboard(user_id: int) -> InlineKeyboardMarkup:
         )],
         [create_button("Мои рефералы", db.get_button_emoji("profile"), style="primary", callback_data="referrals_list")],
         [create_button("Статистика рефералов", db.get_button_emoji("top"), style="primary", callback_data="referrals_stats")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
+        [create_button("Назад", EMOJI_BACK, callback_data="menu_main")]
     ])
 
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button("Вывести средства", db.get_button_emoji("withdraw"), style="success", callback_data="menu_withdraw")],
         [create_button("История транзакций", db.get_button_emoji("profile"), style="primary", callback_data="menu_history")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
+        [create_button("Назад", EMOJI_BACK, callback_data="menu_main")]
     ])
 
 def withdraw_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button("Вывести в ₽", db.get_button_emoji("earn"), style="primary", callback_data="withdraw_rub")],
         [create_button("Вывести в ТМТ", db.get_button_emoji("earn"), style="primary", callback_data="withdraw_manat")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
+        [create_button("Назад", EMOJI_BACK, callback_data="menu_main")]
     ])
 
 def back_keyboard(callback_data: str = "menu_main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data=callback_data)]
+        [create_button("Назад", EMOJI_BACK, callback_data=callback_data)]
     ])
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
@@ -1282,7 +1308,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
             create_button("Статус бота", db.get_button_emoji("profile"), style="primary", callback_data="admin_status"),
             create_button("PiarFlow debug", db.get_button_emoji("top"), style="primary", callback_data="admin_piarflow_debug")
         ],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="menu_main")]
+        [create_button("Назад", EMOJI_BACK, callback_data="menu_main")]
     ])
 
 def admin_sponsors_keyboard() -> InlineKeyboardMarkup:
@@ -1298,12 +1324,11 @@ def admin_sponsors_keyboard() -> InlineKeyboardMarkup:
             create_button("🗑", style="danger", callback_data=f"admin_sponsor_del_{i}")
         ])
     
+    # ОДНА КНОПКА ДЛЯ ДОБАВЛЕНИЯ
     keyboard.append([
-        create_button("Добавить канал", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_channel"),
-        create_button("Добавить Addlist", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_addlist")
+        create_button("➕ Добавить спонсора", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add")
     ])
-    keyboard.append([create_button("Добавить кнопку", db.get_button_emoji("earn"), style="success", callback_data="admin_sponsor_add_button")])
-    keyboard.append([create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")])
+    keyboard.append([create_button("Назад", EMOJI_BACK, callback_data="admin_panel")])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -1314,7 +1339,7 @@ def admin_button_texts_keyboard() -> InlineKeyboardMarkup:
         [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), style="primary", callback_data="admin_btn_top")],
         [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), style="primary", callback_data="admin_btn_profile")],
         [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), style="primary", callback_data="admin_btn_withdraw")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
+        [create_button("Назад", EMOJI_BACK, callback_data="admin_panel")]
     ])
 
 def admin_button_emojis_keyboard() -> InlineKeyboardMarkup:
@@ -1324,21 +1349,21 @@ def admin_button_emojis_keyboard() -> InlineKeyboardMarkup:
         [create_button(f"🏆 {db.get_button_text('top')}", db.get_button_emoji("top"), style="primary", callback_data="admin_emoji_top")],
         [create_button(f"👤 {db.get_button_text('profile')}", db.get_button_emoji("profile"), style="primary", callback_data="admin_emoji_profile")],
         [create_button(f"💳 {db.get_button_text('withdraw')}", db.get_button_emoji("withdraw"), style="primary", callback_data="admin_emoji_withdraw")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
+        [create_button("Назад", EMOJI_BACK, callback_data="admin_panel")]
     ])
 
 def admin_banner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button("📤 Загрузить баннер", db.get_button_emoji("earn"), style="success", callback_data="banner_upload")],
         [create_button("🗑 Удалить баннер", DEFAULT_EMOJI_CHECK, style="danger", callback_data="banner_delete")],
-        [create_button("🔙 Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
+        [create_button("Назад", EMOJI_BACK, callback_data="admin_panel")]
     ])
 
 def admin_referral_reward_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [create_button("Изменить награду (₽)", db.get_button_emoji("earn"), style="primary", callback_data="admin_reward_rub")],
         [create_button("Изменить награду (ТМТ)", db.get_button_emoji("earn"), style="primary", callback_data="admin_reward_manat")],
-        [create_button("🔙 Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")]
+        [create_button("Назад", EMOJI_BACK, callback_data="admin_panel")]
     ])
 
 def admin_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
@@ -1366,7 +1391,7 @@ def admin_users_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     if nav:
         keyboard.append(nav)
     
-    keyboard.append([create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_panel")])
+    keyboard.append([create_button("Назад", EMOJI_BACK, callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def user_actions_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -1383,7 +1408,7 @@ def user_actions_keyboard(user_id: int) -> InlineKeyboardMarkup:
             create_button("Бан", db.get_button_emoji("fire"), style="danger", callback_data=f"admin_user_ban_{user_id}"),
             create_button("Разбан", DEFAULT_EMOJI_CHECK, style="success", callback_data=f"admin_user_unban_{user_id}")
         ],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, callback_data="admin_users")]
+        [create_button("Назад", EMOJI_BACK, callback_data="admin_users")]
     ])
 
 # ======================== СОСТОЯНИЯ FSM ========================
@@ -1816,7 +1841,7 @@ async def menu_earn(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [create_button("Подписаться", DEFAULT_EMOJI_CHECK, "✅", style="primary", url=link)],
         [create_button("Проверить выполнение", db.get_button_emoji("profile"), "🔄", style="success", callback_data="check_task")],
-        [create_button("Назад", DEFAULT_EMOJI_CHECK, "🔙", callback_data="menu_main")]
+        [create_button("Назад", EMOJI_BACK, callback_data="menu_main")]
     ])
     
     await safe_edit_or_send(callback.message, clean_text, keyboard, entities)
@@ -2449,7 +2474,7 @@ async def process_start_text(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Текст старта успешно обновлён!", reply_markup=back_keyboard("admin_panel"))
 
-# ======================== АДМИН-СПОНСОРЫ ========================
+# ======================== АДМИН-СПОНСОРЫ (УПРОЩЁННЫЙ) ========================
 @dp.callback_query(F.data == "admin_sponsors")
 async def admin_sponsors(callback: CallbackQuery):
     if not db.is_admin(callback.from_user.id):
@@ -2478,104 +2503,50 @@ async def admin_sponsor_del(callback: CallbackQuery):
         admin_sponsors_keyboard()
     )
 
-@dp.callback_query(F.data == "admin_sponsor_add_channel")
-async def admin_sponsor_add_channel(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "admin_sponsor_add")
+async def admin_sponsor_add(callback: CallbackQuery, state: FSMContext):
     if not db.is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа!", show_alert=True)
         return
     
-    await state.update_data(sponsor_type="channel")
-    await state.set_state(AdminStates.waiting_for_sponsor_channel_id)
-    await safe_edit_or_send(
-        callback.message,
-        "📺 <b>Добавление канала</b>\n\nШаг 1/3: Введите ID канала (например: <code>-1001234567890</code>):",
-        back_keyboard("admin_sponsors")
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_sponsor_add_addlist")
-async def admin_sponsor_add_addlist(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-    
-    await state.update_data(sponsor_type="addlist")
-    await state.set_state(AdminStates.waiting_for_sponsor_addlist_ids)
-    await safe_edit_or_send(
-        callback.message,
-        "📋 <b>Добавление Addlist</b>\n\nШаг 1/3: Введите ID каналов через запятую (например: <code>-1001234567890, -1009876543210</code>):",
-        back_keyboard("admin_sponsors")
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_sponsor_add_button")
-async def admin_sponsor_add_button(callback: CallbackQuery, state: FSMContext):
-    if not db.is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа!", show_alert=True)
-        return
-    
-    await state.update_data(sponsor_type="button")
     await state.set_state(AdminStates.waiting_for_sponsor_name)
     await safe_edit_or_send(
         callback.message,
-        "🔘 <b>Добавление кнопки</b>\n\nШаг 1/2: Введите название кнопки:",
+        "📝 <b>Добавление спонсора</b>\n\n"
+        "Шаг 1/2: Введите название кнопки спонсора:",
         back_keyboard("admin_sponsors")
     )
     await callback.answer()
-
-@dp.message(AdminStates.waiting_for_sponsor_channel_id)
-async def process_sponsor_channel_id(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    await state.update_data(sponsor_channel_id=message.text.strip())
-    await state.set_state(AdminStates.waiting_for_sponsor_name)
-    await message.answer("Шаг 2/3: Введите название кнопки:")
-
-@dp.message(AdminStates.waiting_for_sponsor_addlist_ids)
-async def process_sponsor_addlist_ids(message: Message, state: FSMContext):
-    if not db.is_admin(message.from_user.id):
-        return
-    ids = [cid.strip() for cid in message.text.replace(',', ' ').split() if cid.strip()]
-    if not ids:
-        await message.answer("❌ Введите хотя бы один ID!")
-        return
-    await state.update_data(sponsor_addlist_ids=ids)
-    await state.set_state(AdminStates.waiting_for_sponsor_name)
-    await message.answer(f"Шаг 2/3: Введите название кнопки (для {len(ids)} каналов):")
 
 @dp.message(AdminStates.waiting_for_sponsor_name)
-async def process_sponsor_name(message: Message, state: FSMContext):
+async def process_sponsor_name_simple(message: Message, state: FSMContext):
     if not db.is_admin(message.from_user.id):
         return
     await state.update_data(sponsor_name=message.text.strip())
     await state.set_state(AdminStates.waiting_for_sponsor_link)
-    await message.answer("Шаг 3/3: Введите ссылку (например: <code>https://t.me/mychannel</code>):")
+    await message.answer(
+        "Шаг 2/2: Введите ссылку на канал/чат (например: <code>https://t.me/mychannel</code>):"
+    )
 
 @dp.message(AdminStates.waiting_for_sponsor_link)
-async def process_sponsor_link(message: Message, state: FSMContext):
+async def process_sponsor_link_simple(message: Message, state: FSMContext):
     if not db.is_admin(message.from_user.id):
         return
     
     data = await state.get_data()
-    sponsor_type = data.get("sponsor_type", "channel")
     link = message.text.strip()
+    button_text = data.get("sponsor_name", "Спонсор")
     
-    if sponsor_type == "channel":
-        channel_id = data.get("sponsor_channel_id", "")
-        button_text = data["sponsor_name"]
-        db.add_sponsor(button_text, link, channel_id, len(db.get_sponsors()), "channel")
-        await message.answer("✅ Канал успешно добавлен!")
-    elif sponsor_type == "addlist":
-        ids = data.get("sponsor_addlist_ids", [])
-        button_text = data["sponsor_name"]
-        db.add_sponsor(button_text, link, None, len(db.get_sponsors()), "addlist", ids)
-        await message.answer(f"✅ Addlist успешно добавлен! ({len(ids)} каналов)")
-    else:
-        button_text = data["sponsor_name"]
-        db.add_sponsor(button_text, link, None, len(db.get_sponsors()), "button")
-        await message.answer("✅ Кнопка успешно добавлена!")
+    # Добавляем спонсора без ID (только кнопка)
+    db.add_sponsor(button_text, link, None, len(db.get_sponsors()), "button")
+    await message.answer("✅ Спонсор успешно добавлен!")
     
     await state.clear()
+    await safe_edit_or_send(
+        message,
+        "📺 <b>Управление спонсорами и заданиями</b>\n\nНиже список текущих обязательных каналов:",
+        admin_sponsors_keyboard()
+    )
 
 # ======================== АДМИН-КНОПКИ ========================
 @dp.callback_query(F.data == "admin_button_texts")
