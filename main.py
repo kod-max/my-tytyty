@@ -3135,7 +3135,39 @@ async def process_broadcast_text(message: Message, state: FSMContext):
 # ======================== ЗАПУСК БОТА ========================
 async def main():
     logger.info("Запуск бота...")
+    
+    # 1. Запускаем веб-сервер для UptimeRobot и Render
+    try:
+        app = web.Application()
+        
+        # Простой хэндлер для проверки работоспособности
+        async def handle_ping(request):
+            return web.Response(text="OK", status=200)
+        
+        # Добавляем несколько эндпоинтов для надёжности
+        app.router.add_get("/", handle_ping)
+        app.router.add_get("/ping", handle_ping)
+        app.router.add_get("/health", handle_ping)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # Render передает номер порта в переменную окружения PORT
+        # Если PORT не задан, используем 10000 (стандартный для Render)
+        port = int(os.environ.get("PORT", 10000))
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"🌐 Веб-сервер запущен на порту {port}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска веб-сервера: {e}")
+        # Продолжаем работу даже если веб-сервер не запустился
+    
+    # 2. Запускаем фоновая задача проверки неактивных пользователей
     asyncio.create_task(check_inactive_users())
+    
+    # 3. Запускаем polling бота
+    logger.info("🤖 Бот запущен и готов к работе!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
