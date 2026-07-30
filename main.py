@@ -1260,6 +1260,37 @@ async def check_channel_subscription(user_id: int, channel_id: str) -> bool:
     except Exception:
         return False
 
+async def check_all_subscriptions(user_id: int, chat_id: int, use_shown_links: bool = False) -> bool:
+    """Проверяет подписки на все спонсоры (ручные + PiarFlow)"""
+    manual_task = asyncio.create_task(check_manual_sponsors(user_id))
+
+    if use_shown_links and user_id in _shown_piar_links:
+        links = _shown_piar_links[user_id]
+        manual_ok = await manual_task
+        if not manual_ok:
+            return False
+        if links:
+            return await check_piar_sponsors(user_id, links)
+        return True
+
+    piar_task = asyncio.create_task(fetch_piar_sponsors(user_id, chat_id))
+
+    manual_ok = await manual_task
+    if not manual_ok:
+        return False
+
+    piar_sponsors = await piar_task
+    links = [s.get("link") for s in piar_sponsors if s.get("link")]
+    if links:
+        return await check_piar_sponsors(user_id, links)
+
+    return True
+
+def invalidate_piar_cache(user_id: int):
+    for key in list(_piar_cache.keys()):
+        if key.startswith(str(user_id)):
+            del _piar_cache[key]
+            
 # ======================== ВЕБХУК ОТ PIARFLOW ========================
 _processed_webhooks = set()
 
