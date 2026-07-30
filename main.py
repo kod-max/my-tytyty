@@ -633,12 +633,20 @@ class Database:
             logger.info("📁 Использую Persistent Disk: /app/data")
         else:
             self.filename = filename
-            logger.info("📁 Использую локальный файл")
+            logger.info(f"📁 Использую локальный файл: {filename}")
         
         self.data = self._load()
         self._ensure_defaults()
         self._migrate_referral_reward_paid()
         self._validate_banner()
+
+    def save(self):
+        # Создаём директорию если её нет
+        dirname = os.path.dirname(self.filename)
+        if dirname:  # Проверяем, что путь не пустой
+            os.makedirs(dirname, exist_ok=True)
+        with open(self.filename, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def _migrate_referral_reward_paid(self):
         changed = False
@@ -766,12 +774,6 @@ class Database:
                 changed = True
         if changed:
             self.save()
-
-    def save(self):
-        # Создаём директорию если её нет
-        os.makedirs(os.path.dirname(self.filename), exist_ok=True)
-        with open(self.filename, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def get_user(self, user_id: int) -> Dict:
         uid = str(user_id)
