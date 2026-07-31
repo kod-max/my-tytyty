@@ -63,6 +63,10 @@ MIN_WITHDRAW_MANAT = 10
 
 PAYMENTS_CHANNEL = "@RublTMT_Payments"
 
+# ШТРАФ ЗА ОТПИСКУ ДЛЯ РЕФЕРАЛА (0.3 ТМТ)
+PENALTY_MANAT = 0.3
+PENALTY_RUB = PENALTY_MANAT / RATE_MANAT
+
 # ПРЕМИУМ ЭМОДЗИ
 EMOJI_COINS = "5251435583443587818"
 DEFAULT_EMOJI_CHECK = "5397916757333654639"
@@ -115,8 +119,8 @@ TEXTS = {
         "enter_phone": "Введите номер телефона (+993XXXXXXXXX):",
         "withdraw_request": "Заявка на вывод принята!",
         "withdraw_pending": "Ожидайте обработки в течение 1-12 часов.",
-        "unsubscribed_penalty": "⚠️ Вы отписались от спонсоров! Штраф -0.75 ТМТ",
-        "referral_unsubscribed": "Ваш реферал {username} отписался от каналов! -1 реферал",
+        "unsubscribed_penalty": "⚠️ Вы отписались от спонсоров! Штраф -0.3 ТМТ",
+        "referral_unsubscribed": "Ваш реферал {username} отписался от каналов! -{reward} ТМТ и -1 реферал",
         "no_referrals": "У вас пока нет рефералов",
         "referral_stats": "Статистика рефералов",
         "total": "Всего",
@@ -164,8 +168,8 @@ TEXTS = {
         "enter_phone": "Telefon belgiňizi giriziň (+993XXXXXXXXX):",
         "withdraw_request": "Çykarmak baradaky arza kabul edildi!",
         "withdraw_pending": "1-12 sagadyň içinde işlenmegine garaşyň.",
-        "unsubscribed_penalty": "⚠️ Siz sponsorlardan aýryldyňyz! Jeza -0.75 ТМТ",
-        "referral_unsubscribed": "Siziň çagyryşyňyz {username} kanallardan aýryldy! -1 çagyryş",
+        "unsubscribed_penalty": "⚠️ Siz sponsorlardan aýryldyňyz! Jeza -0.3 ТМТ",
+        "referral_unsubscribed": "Siziň çagyryşyňyz {username} kanallardan aýryldy! -{reward} ТМТ we -1 çagyryş",
         "no_referrals": "Siziň entek çagyryşyňyz ýok",
         "referral_stats": "Çagyryşlaryň statistikasy",
         "total": "Jemi",
@@ -1350,9 +1354,9 @@ async def handle_unsubscribe_from_webhook(user_id: int, offer_link: str):
         
         logger.info(f"⚠️ Пользователь {user_id} отписался от {offer_link}")
         
-        # Штраф 0.75 ТМТ
-        penalty_manat = 0.75
-        penalty_rub = penalty_manat / RATE_MANAT
+        # ===== ШТРАФ ДЛЯ РЕФЕРАЛА (0.3 ТМТ) =====
+        penalty_manat = PENALTY_MANAT
+        penalty_rub = PENALTY_RUB
         
         user["balance_manat"] -= penalty_manat
         user["balance_rub"] -= penalty_rub
@@ -1361,16 +1365,24 @@ async def handle_unsubscribe_from_webhook(user_id: int, offer_link: str):
         db.set_verified(user_id, False)
         db.save()
         
-        # Убираем реферала у реферера
+        # ===== ШТРАФ ДЛЯ РЕФЕРЕРА =====
         referrer_id = user.get("referred_by")
         if referrer_id is not None:
             referrer = db.get_user(referrer_id)
+            
+            # Снимаем награду за реферала (из админ-панели)
+            reward_manat = db.get_referral_reward_manat()
+            reward_rub = db.get_referral_reward_rub()
+            
+            referrer["balance_manat"] -= reward_manat
+            referrer["balance_rub"] -= reward_rub
             referrer["referral_count"] = max(0, referrer.get("referral_count", 0) - 1)
+            db.add_transaction(referrer_id, "penalty", -reward_rub, f"Штраф за отписку реферала {user_id} (-{reward_manat} ТМТ, -1 реферал)")
             db.save()
             
             try:
                 username = user.get("username") or f"ID {user_id}"
-                text = db.get_text(referrer_id, "referral_unsubscribed", username=username)
+                text = db.get_text(referrer_id, "referral_unsubscribed", username=username, reward=reward_manat)
                 await bot.send_message(referrer_id, text)
             except Exception as e:
                 logger.error(f"Ошибка уведомления реферера: {e}")
