@@ -36,6 +36,7 @@ ADMIN_IDS = [8488094637]
 
 # ======================== PIARFLOW ========================
 PIARFLOW_API_KEY = "Jq1xivpQPHvRxKQE11EpbZaQ9t6BWIWE"
+PIARFLOW_API_KEY_2 = "vFIljEN4wURmpnZt2vrP7zzsbkKwSPV9"
 PIARFLOW_API_URL = "https://piarflow.com/v1"
 PIARFLOW_MAX_SPONSORS = 10
 
@@ -94,7 +95,7 @@ TEXTS = {
         "tasks_per_day": "До 5 заданий в день — 0.50₽ за каждое",
         "payments_time": "Выплаты обрабатываются в течение 1-12 часов",
         "start_earning": "Жми «Заработок», чтобы начать зарабатывать прямо сейчас!",
-        "choose_language": "Выберите язык / Dili saýlaň:",
+        "choose_language": '<emoji id="5449408995691341691">🇷🇺</emoji> Выберите язык / <emoji id="5422512652058379683">🇹🇲</emoji> Dili saýlaň:',
         "language_changed": "Язык успешно изменён на Русский!",
         "language_changed_tm": "Dil üstünlikli Türkmençe üýtgedildi!",
         "earn": "Заработок",
@@ -138,53 +139,53 @@ TEXTS = {
         "referral_stats_btn": "Статистика рефералов",
     },
     LANG_TM: {
-        "welcome": "👋 Pul gazanmak botuna hoş geldiňiz!\n\nBu ýerde hemme zat ýönekeý: sponsorlaryň ýumruklaryny ýerine ýetir, dostlaryňy çagyryş we gazanan pullaryňy hasabyňa çykar.",
-        "referral_reward": "Her çagyrylan dostuňyz üçin {reward_rub}₽ / {reward_manat}ТМТ alýarsyňyz",
-        "tasks_per_day": "Günde 5 ýumruk çenli — hersi üçin 0.50₽",
-        "payments_time": "Tölegler 1-12 sagadyň içinde işlenýär",
+        "welcome": "👋 Pul gazanmak botuna hoş geldiňiz!\n\nBu ýerde hemme zat ýönekeý: sponsorlaryň tabşyryklaryny ýerine ýetiriň, dostlaryňyzy çagyryň we gazananyňyzy hasabyňyza çykaryň.",
+        "referral_reward": "Her çagyrylan dostuňyz üçin {reward_rub}RUB / {reward_manat}TMT alýarsyňyz",
+        "tasks_per_day": "Günde 5 tabşyryga çenli — hersi üçin 0.50RUB",
+        "payments_time": "Tölegler 1-12 sagadyň dowamynda amala aşyrylýar",
         "start_earning": "Derrew gazanmaga başlamak üçin «Gazanç» basyň!",
-        "choose_language": "Dili saýlaň / Выберите язык:",
-        "language_changed": "Dil üstünlikli Türkmençe üýtgedildi!",
-        "language_changed_tm": "Dil üstünlikli Türkmençe üýtgedildi!",
+        "choose_language": '<emoji id="5422512652058379683">🇹🇲</emoji> Dili saýlaň / <emoji id="5449408995691341691">🇷🇺</emoji> Выберите язык:',
+        "language_changed": "Dil üstünlikli Türkmençä üýtgedildi!",
+        "language_changed_tm": "Dil üstünlikli Türkmençä üýtgedildi!",
         "earn": "Gazanç",
-        "referrals": "Çagyryşlar",
-        "top": "Ýokary",
+        "referrals": "Referallar",
+        "top": "Top",
         "profile": "Profil",
-        "withdraw": "Çykarmak",
+        "withdraw": "Pul çykarmak",
         "promo": "Promokod",
         "history": "Taryh",
         "back": "Yza",
         "balance": "Balans",
-        "referral_count": "Çagyryşlar",
-        "tasks_completed": "Ýumruklar ýerine ýetirildi",
-        "tasks_today": "Şu günki ýumruklar",
-        "no_tasks": "Elýeterli ýumruk ýok",
-        "task_done": "Ýumruk ýerine ýetirildi!",
-        "reward": "Baýrak",
-        "withdraw_rub": "₽ bilen çykarmak",
-        "withdraw_manat": "ТМТ bilen çykarmak",
+        "referral_count": "Referallar",
+        "tasks_completed": "Ýerine ýetirilen tabşyryklar",
+        "tasks_today": "Şu günki tabşyryklar",
+        "no_tasks": "Elýeterli tabşyryk ýok",
+        "task_done": "Tabşyryk ýerine ýetirildi!",
+        "reward": "Sylag",
+        "withdraw_rub": "RUB çykarmak",
+        "withdraw_manat": "TMT çykarmak",
         "enter_amount": "Mukdary giriziň:",
-        "enter_details": "Jikme-jiklikleri giriziň:",
+        "enter_details": "Rekwizitleri giriziň:",
         "enter_phone": "Telefon belgiňizi giriziň (+993XXXXXXXXX):",
-        "withdraw_request": "Çykarmak baradaky arza kabul edildi!",
-        "withdraw_pending": "1-12 sagadyň içinde işlenmegine garaşyň.",
-        "unsubscribed_penalty": "⚠️ Siz sponsorlardan aýryldyňyz! Jeza -0.3 ТМТ",
-        "referral_unsubscribed": "Siziň çagyryşyňyz {username} kanallardan aýryldy! -{reward} ТМТ we -1 çagyryş",
-        "no_referrals": "Siziň entek çagyryşyňyz ýok",
-        "referral_stats": "Çagyryşlaryň statistikasy",
+        "withdraw_request": "Pul çykarmak baradaky arza kabul edildi!",
+        "withdraw_pending": "1-12 sagadyň dowamynda garaşyň.",
+        "unsubscribed_penalty": "⚠️ Siz sponsorlardan çykdyňyz! Jerime -0.3 TMT",
+        "referral_unsubscribed": "Siziň referalyňyz {username} kanallardan çykdy! -{reward} TMT we -1 referal",
+        "no_referrals": "Sizde entek referal ýok",
+        "referral_stats": "Referal statistikasy",
         "total": "Jemi",
-        "active": "Işjeň",
-        "inactive": "Işjeň däl",
+        "active": "Aktiw",
+        "inactive": "Aktiw däl",
         "promo_enter": "Promokody giriziň:",
-        "promo_invalid": "Nädogry ýa-da ulanylan promokod!",
-        "promo_success": "Promokod işledildi! Siz {reward}₽ / {reward_tmt}ТМТ aldyňyz",
-        "transaction_history": "Amallaryň taryhy",
-        "empty_history": "Amallaryň taryhy boş.",
-        "referral_list": "📋 Meniň çagyryşlarym:\n\n",
-        "inactive_reminder": "⏰ <b>Siz köp wagt gelmediňiz!</b>\n\nBizde täze ýumruklar we promokodlar peýda boldy. Gazanmaga geliň! 🚀",
-        "invite_friend": "Dosty çagyrmak",
-        "my_referrals": "Meniň çagyryşlarym",
-        "referral_stats_btn": "Çagyryşlaryň statistikasy",
+        "promo_invalid": "Nädogry ýa-da eýýäm ulanylan promokod!",
+        "promo_success": "Promokod işjeňleşdirildi! Siz {reward}RUB / {reward_tmt}TMT gazandyňyz",
+        "transaction_history": "Amallar taryhy",
+        "empty_history": "Amallar taryhy boş.",
+        "referral_list": "📋 Meniň referallarym:\n\n",
+        "inactive_reminder": "⏰ <b>Siz köp wagt bäri gelmediňiz!</b>\n\nBizde täze tabşyryklar we promokodlar peýda boldy. Gazanmak üçin geliň! 🚀",
+        "invite_friend": "Dosuňy çagyrmak",
+        "my_referrals": "Meniň referallarym",
+        "referral_stats_btn": "Referal statistikasy",
     }
 }
 
@@ -804,11 +805,22 @@ class Database:
         return self.data["users"][uid]
 
     def get_user_language(self, user_id: int) -> str:
+        """Возвращает язык пользователя для отображения текстов.
+        Если язык ещё не выбран явно — по умолчанию русский (безопасный
+        фолбэк для текстов), но НЕ используй эту функцию для проверки
+        "выбирал ли пользователь язык" — для этого есть has_chosen_language()."""
         user = self.get_user(user_id)
         lang = user.get("language")
         if not lang or lang not in [LANG_RU, LANG_TM]:
             return LANG_RU
         return lang
+
+    def has_chosen_language(self, user_id: int) -> bool:
+        """True, если пользователь уже явно выбрал язык (нажал кнопку).
+        В отличие от get_user_language(), не подставляет дефолт."""
+        user = self.get_user(user_id)
+        lang = user.get("language")
+        return lang in (LANG_RU, LANG_TM)
 
     def set_user_language(self, user_id: int, lang: str):
         user = self.get_user(user_id)
@@ -1179,68 +1191,138 @@ class Database:
 db = Database()
 
 # ======================== PIARFLOW API ========================
+# Два трафик-ключа PiarFlow. Если основной ключ не дал заданий (пусто/404/
+# ошибка), сразу пробуем второй — без задержки для пользователя.
+PIARFLOW_API_KEYS = [k for k in (PIARFLOW_API_KEY, PIARFLOW_API_KEY_2) if k and k != "BURAYA_API_KEY_YAZ"]
+
 _piar_cache = {}
 PIAR_CACHE_TTL = 60
 _shown_piar_links: Dict[int, List[str]] = {}
+# Запоминаем, каким ключом были получены ссылки конкретного пользователя,
+# чтобы проверку /sponsors/check делать тем же ключом, что и выдачу.
+_piar_link_key: Dict[str, str] = {}
+
+
+async def _fetch_piar_sponsors_with_key(user_id: int, chat_id: int, api_key: str) -> Tuple[Optional[List[Dict]], int]:
+    """Один запрос к /sponsors с конкретным ключом.
+    Возвращает (список_спонсоров_или_None, http_status).
+    None означает "не удалось получить ответ" (ошибка сети/сервера/лимит) —
+    в этом случае НЕЛЬЗЯ трактовать как "спонсоров нет"."""
+    url = f"{PIARFLOW_API_URL}/sponsors"
+    payload = {"user_id": user_id, "chat_id": chat_id, "max_sponsors": PIARFLOW_MAX_SPONSORS}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    all_sponsors = data.get("sponsors", [])
+                    # Не показываем повторно задания, которые уже subscribed/not_counted
+                    sponsors = [
+                        s for s in all_sponsors
+                        if s.get("status") not in ("subscribed", "not_counted")
+                    ]
+                    return sponsors, 200
+                elif resp.status == 404:
+                    return [], 404
+                else:
+                    logger.error(f"PiarFlow ошибка: HTTP {resp.status} (key ...{api_key[-4:]}) user_id={user_id}")
+                    return None, resp.status
+    except Exception as e:
+        logger.error(f"PiarFlow ошибка сети (key ...{api_key[-4:]}) user_id={user_id}: {e}")
+        return None, 0
+
 
 async def fetch_piar_sponsors(user_id: int, chat_id: int) -> List[Dict]:
-    if not PIARFLOW_API_KEY or PIARFLOW_API_KEY == "BURAYA_API_KEY_YAZ":
+    """Возвращает список активных (ещё не выполненных) заданий PiarFlow.
+    Пробует ключи по очереди: если первый ключ вернул пустой список (в том
+    числе честный 404 "заданий нет") или ошибку — сразу, без задержки,
+    пробует следующий ключ. Только если ВСЕ ключи дали ошибку сети/сервера
+    (429/5xx/таймаут), результат не кэшируется как "спонсоров нет" — вместо
+    этого отдаём последний известный кэш, чтобы не снимать гейт подписки
+    из-за временного сбоя API."""
+    if not PIARFLOW_API_KEYS:
         return []
-    
+
     cache_key = f"{user_id}_{chat_id}"
     now = asyncio.get_event_loop().time()
     if cache_key in _piar_cache:
         cached_time, data = _piar_cache[cache_key]
         if now - cached_time < PIAR_CACHE_TTL:
             return data
-    
-    url = f"{PIARFLOW_API_URL}/sponsors"
-    payload = {"user_id": user_id, "chat_id": chat_id, "max_sponsors": PIARFLOW_MAX_SPONSORS}
-    headers = {"Authorization": f"Bearer {PIARFLOW_API_KEY}", "Content-Type": "application/json"}
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    sponsors = data.get("sponsors", [])
-                    _piar_cache[cache_key] = (now, sponsors)
-                    logger.info(f"PiarFlow: получено {len(sponsors)} спонсоров для user_id={user_id}")
-                    return sponsors
-                elif resp.status == 404:
-                    _piar_cache[cache_key] = (now, [])
-                    logger.info(f"PiarFlow: заданий нет (404) для user_id={user_id}")
-                    return []
-                else:
-                    logger.error(f"PiarFlow ошибка: HTTP {resp.status}")
-                    return []
-    except Exception as e:
-        logger.error(f"PiarFlow ошибка: {e}")
-        return []
+
+    had_hard_error = False
+    for api_key in PIARFLOW_API_KEYS:
+        sponsors, status = await _fetch_piar_sponsors_with_key(user_id, chat_id, api_key)
+        if sponsors is None:
+            # Ошибка сети/сервера/лимита на этом ключе — пробуем следующий ключ
+            had_hard_error = True
+            continue
+        if sponsors:
+            # Нашли активные задания на этом ключе — запоминаем, каким
+            # ключом их проверять при /sponsors/check, и сразу отдаём
+            for s in sponsors:
+                link = s.get("link")
+                if link:
+                    _piar_link_key[f"{user_id}:{link}"] = api_key
+            _piar_cache[cache_key] = (now, sponsors)
+            logger.info(
+                f"PiarFlow: получено {len(sponsors)} активных заданий "
+                f"(key ...{api_key[-4:]}) для user_id={user_id}"
+            )
+            return sponsors
+        # Пустой список (в т.ч. честный 404) на этом ключе — пробуем следующий
+        logger.info(f"PiarFlow: заданий нет (key ...{api_key[-4:]}, status={status}) для user_id={user_id}, пробую следующий ключ")
+
+    if had_hard_error:
+        # Хотя бы один ключ упал по сетевой/серверной ошибке — не кэшируем
+        # как "спонсоров нет", отдаём последний известный кэш.
+        logger.warning(f"PiarFlow: есть сбой на одном из ключей для user_id={user_id} — не кэширую как 'спонсоров нет'")
+        return _piar_cache.get(cache_key, (0, []))[1]
+
+    # Все ключи честно ответили "заданий нет" — кэшируем пустой список
+    _piar_cache[cache_key] = (now, [])
+    return []
+
 
 async def check_piar_sponsors(user_id: int, links: List[str]) -> bool:
+    """Проверяет выполнение заданий. Каждую ссылку проверяет тем ключом,
+    которым она была выдана (см. _piar_link_key), чтобы проверка шла по
+    тому же трафик-боту/аккаунту PiarFlow, что и выдача задания."""
     if not links:
         return True
-    
-    url = f"{PIARFLOW_API_URL}/sponsors/check"
-    payload = {"user_id": user_id, "links": links}
-    headers = {"Authorization": f"Bearer {PIARFLOW_API_KEY}", "Content-Type": "application/json"}
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    sponsors = data.get("sponsors", [])
-                    return all(s.get("status") in ["subscribed", "not_counted"] for s in sponsors)
-                elif resp.status == 404:
-                    logger.info(f"PiarFlow check: 404 (заданий нет) для user_id={user_id}")
-                    return True
-                logger.error(f"PiarFlow check ошибка: HTTP {resp.status}")
-                return False
-    except Exception as e:
-        logger.error(f"PiarFlow check ошибка: {e}")
-        return False
+
+    # Группируем ссылки по ключу, которым они были выданы
+    links_by_key: Dict[str, List[str]] = {}
+    for link in links:
+        api_key = _piar_link_key.get(f"{user_id}:{link}", PIARFLOW_API_KEYS[0] if PIARFLOW_API_KEYS else PIARFLOW_API_KEY)
+        links_by_key.setdefault(api_key, []).append(link)
+
+    for api_key, key_links in links_by_key.items():
+        url = f"{PIARFLOW_API_URL}/sponsors/check"
+        payload = {"user_id": user_id, "links": key_links}
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        sponsors = data.get("sponsors", [])
+                        if not all(s.get("status") in ["subscribed", "not_counted"] for s in sponsors):
+                            return False
+                    elif resp.status == 404:
+                        logger.info(f"PiarFlow check: 404 (заданий нет, key ...{api_key[-4:]}) для user_id={user_id}")
+                        continue
+                    else:
+                        logger.error(f"PiarFlow check ошибка: HTTP {resp.status} (key ...{api_key[-4:]}) user_id={user_id}")
+                        return False
+        except Exception as e:
+            logger.error(f"PiarFlow check ошибка сети (key ...{api_key[-4:]}) user_id={user_id}: {e}")
+            return False
+
+    return True
 
 async def check_manual_sponsors(user_id: int) -> bool:
     for sponsor in db.get_sponsors():
@@ -2061,10 +2143,9 @@ async def cmd_start(message: Message):
         await send_sponsors_gate(message, user_id, message.chat.id)
         return
     
-    lang = db.get_user_language(user_id)
-    if not lang:
+    if not db.has_chosen_language(user_id):
         clean_text, entities = parse_premium_emoji(db.get_text(user_id, "choose_language"))
-        await message.answer(clean_text, entities=entities, reply_markup=language_keyboard())
+        await message.answer(clean_text, entities=entities if entities else None, reply_markup=language_keyboard())
         return
     
     await try_confirm_referral(user_id)
@@ -2092,6 +2173,7 @@ async def select_language(callback: CallbackQuery):
         text = TEXTS[LANG_RU]["language_changed"]
     
     await callback.answer(text)
+    await try_confirm_referral(user_id)
     await send_main_menu(callback.message, user_id, edit=True)
 
 # ======================== ПРОВЕРКА ПОДПИСКИ ========================
@@ -2108,15 +2190,14 @@ async def verify_sponsors(callback: CallbackQuery):
     if ok:
         db.set_verified(user_id, True)
         _shown_piar_links.pop(user_id, None)
-        await try_confirm_referral(user_id)
         await callback.answer("✅ Подписка подтверждена!")
         
-        lang = db.get_user_language(user_id)
-        if not lang:
+        if not db.has_chosen_language(user_id):
             clean_text, entities = parse_premium_emoji(db.get_text(user_id, "choose_language"))
-            await callback.message.answer(clean_text, entities=entities, reply_markup=language_keyboard())
+            await safe_edit_or_send(callback.message, clean_text, language_keyboard(), entities)
             return
         
+        await try_confirm_referral(user_id)
         await send_main_menu(callback.message, user_id, edit=True)
     else:
         await callback.answer(
@@ -2141,6 +2222,12 @@ async def menu_main(callback: CallbackQuery):
     
     if await user_needs_gate(user_id, callback.message.chat.id):
         await send_sponsors_gate(callback.message, user_id, callback.message.chat.id, edit=True)
+        await callback.answer()
+        return
+    
+    if not db.has_chosen_language(user_id):
+        clean_text, entities = parse_premium_emoji(db.get_text(user_id, "choose_language"))
+        await safe_edit_or_send(callback.message, clean_text, language_keyboard(), entities)
         await callback.answer()
         return
     
@@ -3328,7 +3415,7 @@ async def admin_piarflow_debug(callback: CallbackQuery):
     debug_info = (
         f"🔍 <b>PiarFlow Debug</b>\n\n"
         f"API URL: {PIARFLOW_API_URL}\n"
-        f"API Key: {'✅ Установлен' if PIARFLOW_API_KEY and PIARFLOW_API_KEY != 'BURAYA_API_KEY_YAZ' else '❌ Не установлен'}\n"
+        f"Ключей активно: <b>{len(PIARFLOW_API_KEYS)}</b> из 2\n"
         f"Max sponsors: {PIARFLOW_MAX_SPONSORS}\n\n"
         f"Получено спонсоров: <b>{len(piar_sponsors)}</b>\n"
     )
